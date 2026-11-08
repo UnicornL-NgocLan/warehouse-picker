@@ -941,12 +941,36 @@ export async function getLocations(odoo, query, limit = 50) {
       domain.push(["complete_name", "ilike", query.trim()]);
     }
     const params = [[domain, ["id", "complete_name", "name"], 0, maxLimit, "complete_name asc"]];
-    odoo.execute_kw("stock.location", "search_read", params, (err, records) => {
+    odoo.execute_kw("stock.location", "search_read", params, async (err, records) => {
       if (err) return reject(err);
       const result = (records || []).map((loc) => ({
         id: loc.id,
         name: formatLocationName(loc.complete_name || loc.name),
       }));
+
+      // Đảm bảo địa điểm nguồn mặc định (ID 288) luôn có trong danh sách lựa chọn
+      if (!query && !result.some((loc) => loc.id === 288)) {
+        try {
+          const loc288Records = await new Promise((res288, rej288) => {
+            odoo.execute_kw(
+              "stock.location",
+              "search_read",
+              [[[["id", "=", 288]], ["id", "complete_name", "name"], 0, 1]],
+              (e288, r288) => (e288 ? rej288(e288) : res288(r288 || []))
+            );
+          });
+          if (loc288Records && loc288Records.length > 0) {
+            const loc288 = loc288Records[0];
+            result.unshift({
+              id: loc288.id,
+              name: formatLocationName(loc288.complete_name || loc288.name),
+            });
+          }
+        } catch (e288) {
+          // Bỏ qua lỗi nếu không tìm thấy 288
+        }
+      }
+
       resolve(result);
     });
   });

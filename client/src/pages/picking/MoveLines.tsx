@@ -29,6 +29,8 @@ import { myColor } from 'color';
 
 const { Text } = Typography;
 
+const DEFAULT_SOURCE_LOCATION_ID = 288;
+
 const MoveLines: React.FC = () => {
   const { pickingId, moveId } = useParams<{ pickingId: string; moveId: string }>();
   const navigate = useNavigate();
@@ -115,14 +117,22 @@ const MoveLines: React.FC = () => {
         setFetchingLocations(true);
         try {
           const locs = await pickingService.getLocations(searchQuery);
-          setLocationOptions(locs || []);
+          setLocationOptions((prev) => {
+            const newLocs = locs || [];
+            const selectedId = form.getFieldValue('locationId') || DEFAULT_SOURCE_LOCATION_ID;
+            const currentSelected = prev.find((l) => l.id === selectedId);
+            if (currentSelected && !newLocs.some((l) => l.id === currentSelected.id)) {
+              return [currentSelected, ...newLocs];
+            }
+            return newLocs;
+          });
         } catch {
           // ignore search error
         } finally {
           setFetchingLocations(false);
         }
       }, 300),
-    []
+    [form]
   );
 
   // Debounced lot search
@@ -144,7 +154,7 @@ const MoveLines: React.FC = () => {
 
   // Open Edit Drawer
   const handleOpenEdit = useCallback(
-    (line: MoveLine) => {
+    (line: MoveLine, isNew: boolean = false) => {
       form.resetFields();
       setEditingLine(line);
       setDrawerError(null);
@@ -155,6 +165,17 @@ const MoveLines: React.FC = () => {
       const initialLocs: Ref[] = [];
       if (line.location && line.location.id) {
         initialLocs.push(line.location);
+      }
+
+      const targetLocationId = isNew ? DEFAULT_SOURCE_LOCATION_ID : line.location?.id;
+
+      if (isNew && !initialLocs.some((l) => l.id === DEFAULT_SOURCE_LOCATION_ID)) {
+        const existing288 = locationOptions.find((l) => l.id === DEFAULT_SOURCE_LOCATION_ID);
+        if (existing288) {
+          initialLocs.unshift(existing288);
+        } else {
+          initialLocs.unshift({ id: DEFAULT_SOURCE_LOCATION_ID, name: 'Đang tải địa điểm (288)...' });
+        }
       }
       setLocationOptions(initialLocs);
       searchLocations('');
@@ -170,14 +191,14 @@ const MoveLines: React.FC = () => {
 
       form.setFieldsValue({
         locationDest: line.locationDest?.name || 'Không xác định',
-        locationId: line.location?.id,
+        locationId: targetLocationId,
         lotId: line.lot?.id || null,
         qtyDone: line.qtyDone ? String(line.qtyDone) : '0',
       });
 
       setIsDrawerOpen(true);
     },
-    [form, searchLocations, searchLots]
+    [form, locationOptions, searchLocations, searchLots]
   );
 
   // Handle image files selection from Camera or Gallery
@@ -221,7 +242,7 @@ const MoveLines: React.FC = () => {
       }, 100);
 
       // Open drawer for the newly created line
-      handleOpenEdit(newLine);
+      handleOpenEdit(newLine, true);
 
       // Reload to ensure full sync
       loadData();

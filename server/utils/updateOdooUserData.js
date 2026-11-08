@@ -264,88 +264,99 @@ export async function createMoveLine(odoo, moveId) {
       }
       const move = moveRecords[0];
 
+      const defaultSourceLocationId = 288;
       const createVals = {
         picking_id: move.picking_id ? move.picking_id[0] : false,
         move_id: move.id,
         product_id: move.product_id[0],
         product_uom_id: move.product_uom[0],
-        location_id: move.location_id[0],
+        location_id: defaultSourceLocationId || move.location_id[0],
         location_dest_id: move.location_dest_id[0],
         qty_done: 0,
       };
 
-      odoo.execute_kw("stock.move.line", "create", [[createVals]], async (cErr, newLineId) => {
-        if (cErr) return reject(cErr);
+      const doCreateLine = (vals) => {
+        odoo.execute_kw("stock.move.line", "create", [[vals]], async (cErr, newLineId) => {
+          if (cErr) {
+            // Nếu tạo với địa điểm 288 lỗi, thử lại với địa điểm nguồn của move
+            if (vals.location_id !== move.location_id[0]) {
+              return doCreateLine({ ...vals, location_id: move.location_id[0] });
+            }
+            return reject(cErr);
+          }
 
-        try {
-          let tracking = "none";
           try {
-            const pRecords = await new Promise((resP, rejP) => {
+            let tracking = "none";
+            try {
+              const pRecords = await new Promise((resP, rejP) => {
+                odoo.execute_kw(
+                  "product.product",
+                  "search_read",
+                  [[[["id", "=", move.product_id[0]]], ["id", "tracking"], 0, 1]],
+                  (pErr, pRecs) => (pErr ? rejP(pErr) : resP(pRecs || []))
+                );
+              });
+              if (pRecords && pRecords.length > 0 && pRecords[0].tracking) {
+                tracking = pRecords[0].tracking;
+              }
+            } catch (tErr) {
+              tracking = "none";
+            }
+
+            const lRecords = await new Promise((resL, rejL) => {
               odoo.execute_kw(
-                "product.product",
+                "stock.move.line",
                 "search_read",
-                [[[["id", "=", move.product_id[0]]], ["id", "tracking"], 0, 1]],
-                (pErr, pRecs) => (pErr ? rejP(pErr) : resP(pRecs || []))
+                [[
+                  [["id", "=", newLineId]],
+                  ["id", "location_dest_id", "location_id", "lot_id", "qty_done", "product_uom_id", "product_id"],
+                  0,
+                  1,
+                ]],
+                (lErr, lRecs) => (lErr ? rejL(lErr) : resL(lRecs || []))
               );
             });
-            if (pRecords && pRecords.length > 0 && pRecords[0].tracking) {
-              tracking = pRecords[0].tracking;
+
+            if (!lRecords || lRecords.length === 0) {
+              return reject(new Error("Không tìm thấy dòng soạn hàng vừa tạo"));
             }
-          } catch (tErr) {
-            tracking = "none";
+
+            const line = lRecords[0];
+            const locName =
+              Array.isArray(line.location_id) && line.location_id.length >= 2
+                ? line.location_id[1]
+                : "";
+            const locDestName =
+              Array.isArray(line.location_dest_id) && line.location_dest_id.length >= 2
+                ? line.location_dest_id[1]
+                : "";
+
+            resolve({
+              id: line.id,
+              locationDest: {
+                id: Array.isArray(line.location_dest_id) ? line.location_dest_id[0] : 0,
+                name: formatLocationName(locDestName),
+              },
+              location: {
+                id: Array.isArray(line.location_id) ? line.location_id[0] : 0,
+                name: formatLocationName(locName),
+              },
+              lot:
+                Array.isArray(line.lot_id) && line.lot_id.length >= 2
+                  ? { id: line.lot_id[0], name: line.lot_id[1] }
+                  : null,
+              qtyDone: Number(line.qty_done) || 0,
+              uom: Array.isArray(line.product_uom_id) ? line.product_uom_id[1] : "",
+              productId: Array.isArray(line.product_id) ? line.product_id[0] : move.product_id[0],
+              tracking,
+            });
+          } catch (postErr) {
+            reject(postErr);
           }
+        });
+      };
 
-          const lRecords = await new Promise((resL, rejL) => {
-            odoo.execute_kw(
-              "stock.move.line",
-              "search_read",
-              [[
-                [["id", "=", newLineId]],
-                ["id", "location_dest_id", "location_id", "lot_id", "qty_done", "product_uom_id", "product_id"],
-                0,
-                1,
-              ]],
-              (lErr, lRecs) => (lErr ? rejL(lErr) : resL(lRecs || []))
-            );
-          });
-
-          if (!lRecords || lRecords.length === 0) {
-            return reject(new Error("Không tìm thấy dòng soạn hàng vừa tạo"));
-          }
-
-          const line = lRecords[0];
-          const locName =
-            Array.isArray(line.location_id) && line.location_id.length >= 2
-              ? line.location_id[1]
-              : "";
-          const locDestName =
-            Array.isArray(line.location_dest_id) && line.location_dest_id.length >= 2
-              ? line.location_dest_id[1]
-              : "";
-
-          resolve({
-            id: line.id,
-            locationDest: {
-              id: Array.isArray(line.location_dest_id) ? line.location_dest_id[0] : 0,
-              name: formatLocationName(locDestName),
-            },
-            location: {
-              id: Array.isArray(line.location_id) ? line.location_id[0] : 0,
-              name: formatLocationName(locName),
-            },
-            lot:
-              Array.isArray(line.lot_id) && line.lot_id.length >= 2
-                ? { id: line.lot_id[0], name: line.lot_id[1] }
-                : null,
-            qtyDone: Number(line.qty_done) || 0,
-            uom: Array.isArray(line.product_uom_id) ? line.product_uom_id[1] : "",
-            productId: Array.isArray(line.product_id) ? line.product_id[0] : move.product_id[0],
-            tracking,
-          });
-        } catch (postErr) {
-          reject(postErr);
-        }
-      });
+      doCreateLine(createVals);
     });
   });
 }
