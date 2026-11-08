@@ -1,0 +1,71 @@
+export interface ICompany {
+    id:number,
+    name:string,
+    short_name:string,
+}
+
+export interface ITransportLine {
+    address_end: string,
+    address_start: string,
+    id: number,
+    item_type:string,
+    picking_id?: any,
+    name: string,
+    partner_id: any,
+    state:string,
+    transport_id:[],
+    date_end_actual:string,
+    note:string,
+    origin:string,
+}
+
+export interface ITransport {
+    id:number,
+    name:string,
+    state:string,
+    vehicle_id:any,
+    date_start_actual:string,
+    sea_driver_id:any,
+}
+
+export interface IVehicle {
+    id:number,
+    license_plate: string,
+    brand_id: any,
+    odometer: number,
+    is_on_mission:boolean,
+    image:string,
+}
+
+export interface IOdometerLine {
+    id?:number,
+    date:Date,
+    value:number,
+    create_uid:any,
+}
+
+export interface IFuelLog {
+    id:number,
+    date:Date,
+    liter:number,
+    odometer:number,
+    is_full:boolean,
+    amount:number,
+    create_uid:any,
+    created_at:Date,
+    write_uid:any,}
+
+export interface IWarningReminder {
+    id:number,
+    state:string,
+    vehicle_id:any
+}
+
+export interface IReminderLine {
+    id:number,
+    state:string,
+    name:string,
+    due_odometer:number,
+}
+
+export * from './picking';

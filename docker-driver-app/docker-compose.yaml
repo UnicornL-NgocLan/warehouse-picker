@@ -1,0 +1,38 @@
+services:
+  web:
+    build:
+      context: ../client
+    container_name: web-driver
+    restart: always
+    environment:
+      # - REACT_APP_SERVER_URI=http://103.161.22.196:3031/
+      # - REACT_APP_SERVER_URI=https://logistics.dannygreen.vn/
+
+  server:
+    build:
+      context: ../server
+    container_name: server-driver
+    restart: always
+    environment:
+      - JWT_SECRET=xxxxxxx
+      - ODOO_URL=xxxxxx
+      - ODOO_DB=xxxxxx
+      - CRYPTO_KEY=xxxxxx
+      - IV=xxxxxx
+      - MONGO_URI=xxxxxx
+      - NODE_ENV=production
+
+  nginx:
+    image: nginx:latest
+    restart: always
+    container_name: nginx-driver
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/proxy.conf:/etc/nginx/proxy.conf
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      #- ./nginx/ssl:/etc/ssl
+    depends_on:
+      - web
+      - server
+    ports:
+      - 3031:3031

@@ -1,0 +1,57 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-sizing: border-box;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+.ant-table table { font-size: 12px; }
+.ant-pagination-simple-pager {font-size :12px;}
+.ant-pagination-simple-pager input {font-size :12px; padding:0}
+.ant-pagination.ant-pagination-mini.ant-table-pagination.ant-table-pagination-center.css-dev-only-do-not-override-1pg9a38.ant-pagination-simple {
+  margin:0;
+  margin-bottom: 1rem;
+}
+
+.ant-select-selection-item{
+  font-size: 14px;
+}
+
+.reminder-table td.ant-table-cell {
+  padding:1rem 0.4rem !important; 
+  font-size:14px;
+}
+
+.reminder-table th.ant-table-cell {
+  padding:1rem 0.4rem !important; 
+  font-size:14px;
+  background:#f2f2f2 !important;
+}
+
+.reminder-table .ant-tag {
+  margin:0;
+}
+
+.ant-list-item-meta-title{
+  margin:0rem 0 8px;
+}
+
+.date-column{
+  font-size:14px;
+}
+
+th.ant-table-cell{
+  background:#f2f2f2 !important;
+}
+
+.row-full {
+  background-color: #d8dfb2 !important;
+}
