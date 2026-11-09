@@ -21,6 +21,10 @@ export type Move = {
   pickedUom: string;
   reservedQty?: number;
   isReserved?: boolean;
+  hasPackaging?: boolean;
+  packaging?: Ref | null;
+  packageQty?: number;
+  packageQtyDone?: number;
 };
 
 export type MoveLine = {
@@ -32,6 +36,8 @@ export type MoveLine = {
   uom: string;
   productId: number;
   tracking: "none" | "lot" | "serial";
+  hasPackaging?: boolean;
+  packageQty?: number;
 };
 
 export type UpdateMoveLinePayload = {

@@ -15,6 +15,7 @@ import {
   Alert,
   Image,
   message,
+  Tag,
 } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, CameraOutlined, PictureOutlined } from '@ant-design/icons';
 import debounce from 'lodash/debounce';
@@ -26,6 +27,7 @@ import { formatLocationName } from 'helpers/formatLocation';
 import { fileToBase64, uploadMultipleImagesToDropBox } from 'helpers/dropboxUpload';
 import { getErrorMessage } from 'helpers/getErrorMessage';
 import { myColor } from 'color';
+import { clearMovesCache } from './PickingMoves';
 
 const { Text } = Typography;
 
@@ -235,6 +237,7 @@ const MoveLines: React.FC = () => {
 
       // Append new line and open drawer
       setMoveLines((prev) => [...prev, newLine]);
+      if (pickingId) clearMovesCache(pickingId);
 
       // Scroll to bottom
       setTimeout(() => {
@@ -327,6 +330,7 @@ const MoveLines: React.FC = () => {
 
       // Update state locally & reload
       setMoveLines((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+      if (pickingId) clearMovesCache(pickingId);
       loadData();
     } catch (err: any) {
       if (err?.errorFields) {
@@ -381,6 +385,7 @@ const MoveLines: React.FC = () => {
           await pickingService.deleteMoveLine(line.id);
           message.success('Đã xóa dòng soạn hàng');
           setMoveLines((prev) => prev.filter((l) => l.id !== line.id));
+          if (pickingId) clearMovesCache(pickingId);
           loadData();
         } catch (err) {
           const msg = getErrorMessage(err);
@@ -443,13 +448,18 @@ const MoveLines: React.FC = () => {
               fontSize: 15,
               color: '#1a1a1a',
               display: 'block',
-              marginBottom: 10,
+              marginBottom: currentMove?.packaging ? 4 : 10,
               wordBreak: 'break-word',
               whiteSpace: 'normal',
             }}
           >
             {productName}
           </Text>
+          {currentMove?.packaging && (
+            <Tag color="cyan" style={{ marginBottom: 10, fontSize: 12, borderRadius: 4 }}>
+              Đóng gói: {currentMove.packaging.name}
+            </Tag>
+          )}
 
           <div
             style={{

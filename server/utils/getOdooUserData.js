@@ -641,7 +641,18 @@ export async function getPickingMoves(odoo, pickingId) {
   return new Promise((resolve, reject) => {
     const inParams = [
       [["picking_id", "=", parseInt(pickingId, 10)], ["state", "!=", "cancel"]],
-      ["id", "product_id", "product_uom_qty", "product_uom", "sale_line_id", "reserved_availability", "state"],
+      [
+        "id",
+        "product_id",
+        "product_uom_qty",
+        "product_uom",
+        "sale_line_id",
+        "reserved_availability",
+        "state",
+        "product_packaging",
+        "package_qty",
+        "package_qty_done",
+      ],
       0,
       1000,
       "id asc",
@@ -684,7 +695,7 @@ export async function getPickingMoves(odoo, pickingId) {
             ? new Promise((resML) => {
                 const mlParams = [
                   [["move_id", "in", moveIds]],
-                  ["id", "move_id", "qty_done", "product_uom_qty"],
+                  ["id", "move_id", "qty_done", "product_uom_qty", "package_qty"],
                   0,
                   2000,
                 ];
@@ -716,10 +727,12 @@ export async function getPickingMoves(odoo, pickingId) {
 
         const pickedQtyMap = {};
         const reservedQtyMap = {};
+        const pickedPackageQtyMap = {};
         (moveLines || []).forEach((ml) => {
           const mId = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
           pickedQtyMap[mId] = (pickedQtyMap[mId] || 0) + (Number(ml.qty_done) || 0);
           reservedQtyMap[mId] = (reservedQtyMap[mId] || 0) + (Number(ml.product_uom_qty) || 0);
+          pickedPackageQtyMap[mId] = (pickedPackageQtyMap[mId] || 0) + (Number(ml.package_qty) || 0);
         });
 
         // Resolve UoM categories for any newly fetched products
@@ -771,7 +784,7 @@ export async function getPickingMoves(odoo, pickingId) {
           const solId = m.sale_line_id && Array.isArray(m.sale_line_id) ? m.sale_line_id[0] : null;
           const sol = solId ? saleLineMap[solId] : null;
           const orderedFromPicking = !sol;
-          const orderedQty = sol ? Number(sol.product_uom_qty) : Number(m.product_uom_qty);
+
           const defaultOrderedUom =
             sol && Array.isArray(sol.product_uom)
               ? sol.product_uom[1]
@@ -781,9 +794,35 @@ export async function getPickingMoves(odoo, pickingId) {
           const defaultPickedUom = Array.isArray(m.product_uom) ? m.product_uom[1] : "";
 
           const customUom = productCustomUomCache.get(m.product_id[0]);
-          const orderedUom = customUom || defaultOrderedUom;
-          const pickedUom = customUom || defaultPickedUom;
-          const pickedQty = pickedQtyMap[m.id] || 0;
+
+          const hasPackaging = Boolean(
+            m.product_packaging &&
+              (Array.isArray(m.product_packaging) ? m.product_packaging[0] : m.product_packaging)
+          );
+          const packagingName =
+            hasPackaging && Array.isArray(m.product_packaging) ? m.product_packaging[1] : null;
+
+          let orderedQty = 0;
+          let pickedQty = 0;
+          let orderedUom = "";
+          let pickedUom = "";
+
+          if (hasPackaging) {
+            // Khi có product_packaging: lấy trường package_qty (demand) và tính số lượng đã soạn
+            orderedQty = Number(m.package_qty) || 0;
+            const linesPkgDone = pickedPackageQtyMap[m.id] || 0;
+            const movePkgDone = Number(m.package_qty_done) || 0;
+            // Ưu tiên tổng số lượng package_qty thực tế từ các dòng stock.move.line
+            pickedQty = linesPkgDone > 0 ? linesPkgDone : movePkgDone;
+            orderedUom = packagingName || defaultOrderedUom;
+            pickedUom = packagingName || defaultPickedUom;
+          } else {
+            // Khi không có product_packaging: tính theo đơn vị gốc
+            orderedQty = sol ? Number(sol.product_uom_qty) : Number(m.product_uom_qty);
+            orderedUom = customUom || defaultOrderedUom;
+            pickedQty = pickedQtyMap[m.id] || 0;
+            pickedUom = customUom || defaultPickedUom;
+          }
 
           const reservedFromLines = Number(reservedQtyMap[m.id]) || 0;
           const reservedFromMove = Number(m.reserved_availability) || 0;
@@ -803,6 +842,13 @@ export async function getPickingMoves(odoo, pickingId) {
             pickedUom,
             reservedQty: Number(reservedQty) || 0,
             isReserved: Boolean(isReserved),
+            hasPackaging,
+            packaging:
+              hasPackaging && Array.isArray(m.product_packaging)
+                ? { id: m.product_packaging[0], name: m.product_packaging[1] }
+                : null,
+            packageQty: Number(m.package_qty) || 0,
+            packageQtyDone: Number(m.package_qty_done) || 0,
           };
         });
 
@@ -818,7 +864,7 @@ export async function getMoveLines(odoo, moveId) {
   return new Promise((resolve, reject) => {
     const moveParams = [
       [["id", "=", parseInt(moveId, 10)]],
-      ["id", "product_id"],
+      ["id", "product_id", "product_packaging", "package_qty", "package_qty_done"],
       0,
       1,
     ];
@@ -829,6 +875,13 @@ export async function getMoveLines(odoo, moveId) {
       }
       const move = moveRecords[0];
       const productId = move.product_id[0];
+
+      const hasPackaging = Boolean(
+        move.product_packaging &&
+          (Array.isArray(move.product_packaging) ? move.product_packaging[0] : move.product_packaging)
+      );
+      const packagingName =
+        hasPackaging && Array.isArray(move.product_packaging) ? move.product_packaging[1] : null;
 
       try {
         let tracking = "none";
@@ -882,7 +935,7 @@ export async function getMoveLines(odoo, moveId) {
 
         const lineParams = [
           [["move_id", "=", parseInt(moveId, 10)]],
-          ["id", "location_dest_id", "location_id", "lot_id", "qty_done", "product_uom_id", "product_id"],
+          ["id", "location_dest_id", "location_id", "lot_id", "qty_done", "product_uom_id", "product_id", "package_qty"],
           0,
           1000,
           "id asc",
@@ -904,6 +957,14 @@ export async function getMoveLines(odoo, moveId) {
               ? line.location_dest_id[1]
               : "";
 
+          const defaultLineUom = Array.isArray(line.product_uom_id) ? line.product_uom_id[1] : "";
+          const effectiveQty = hasPackaging
+            ? (Number(line.package_qty) || 0)
+            : (Number(line.qty_done) || 0);
+          const effectiveUom = (hasPackaging && packagingName)
+            ? packagingName
+            : (customUom || defaultLineUom);
+
           return {
             id: line.id,
             locationDest: {
@@ -918,10 +979,12 @@ export async function getMoveLines(odoo, moveId) {
               Array.isArray(line.lot_id) && line.lot_id.length >= 2
                 ? { id: line.lot_id[0], name: line.lot_id[1] }
                 : null,
-            qtyDone: Number(line.qty_done) || 0,
-            uom: customUom || (Array.isArray(line.product_uom_id) ? line.product_uom_id[1] : ""),
+            qtyDone: effectiveQty,
+            uom: effectiveUom,
             productId: Array.isArray(line.product_id) ? line.product_id[0] : productId,
             tracking,
+            hasPackaging,
+            packageQty: Number(line.package_qty) || 0,
           };
         });
 

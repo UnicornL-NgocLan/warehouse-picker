@@ -13,6 +13,14 @@ const { Text } = Typography;
 // In-memory cache for moves per pickingId (SWR pattern for instant UI display)
 const movesCache: Record<string, Move[]> = {};
 
+export const clearMovesCache = (targetPickingId?: string) => {
+  if (targetPickingId) {
+    delete movesCache[targetPickingId];
+  } else {
+    Object.keys(movesCache).forEach((k) => delete movesCache[k]);
+  }
+};
+
 const PickingMoves: React.FC = () => {
   const { pickingId } = useParams<{ pickingId: string }>();
   const navigate = useNavigate();
@@ -50,6 +58,7 @@ const PickingMoves: React.FC = () => {
   );
 
   useEffect(() => {
+    // Luôn tải lại dữ liệu mới nhất khi mở lại màn hình
     loadMoves(!movesCache[pickingId || '']);
   }, [loadMoves, pickingId]);
 
@@ -112,7 +121,7 @@ const PickingMoves: React.FC = () => {
             message={errorMsg}
             showIcon
             action={
-              <Button size="small" type="primary" onClick={loadMoves}>
+              <Button size="small" type="primary" onClick={() => loadMoves(true)}>
                 Thử lại
               </Button>
             }
@@ -138,7 +147,7 @@ const PickingMoves: React.FC = () => {
             <Button
               type="primary"
               style={{ marginTop: 16, backgroundColor: myColor.buttonColor }}
-              onClick={loadMoves}
+              onClick={() => loadMoves(true)}
             >
               Tải lại
             </Button>
@@ -183,6 +192,11 @@ const PickingMoves: React.FC = () => {
                   >
                     {move.product.name}
                   </Text>
+                  {move.packaging && (
+                    <Tag color="cyan" style={{ marginTop: 4, fontSize: 12, borderRadius: 4 }}>
+                      Đóng gói: {move.packaging.name}
+                    </Tag>
+                  )}
                 </div>
 
                 <div

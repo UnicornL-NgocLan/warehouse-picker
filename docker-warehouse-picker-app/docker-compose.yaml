@@ -2,7 +2,7 @@ services:
   web:
     build:
       context: ../client
-    container_name: web-driver
+    container_name: web-warehouse-picker
     restart: always
     environment:
       # - REACT_APP_SERVER_URI=http://103.161.22.196:3031/
@@ -11,7 +11,7 @@ services:
   server:
     build:
       context: ../server
-    container_name: server-driver
+    container_name: server-warehouse-picker
     restart: always
     environment:
       - JWT_SECRET=xxxxxxx
@@ -25,7 +25,7 @@ services:
   nginx:
     image: nginx:latest
     restart: always
-    container_name: nginx-driver
+    container_name: nginx-warehouse-picker
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/proxy.conf:/etc/nginx/proxy.conf
