@@ -25,6 +25,7 @@ export type Move = {
   packaging?: Ref | null;
   packageQty?: number;
   packageQtyDone?: number;
+  state?: string;
 };
 
 export type MoveLine = {
@@ -38,6 +39,7 @@ export type MoveLine = {
   tracking: "none" | "lot" | "serial";
   hasPackaging?: boolean;
   packageQty?: number;
+  moveState?: string;
 };
 
 export type UpdateMoveLinePayload = {

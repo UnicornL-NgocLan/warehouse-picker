@@ -164,7 +164,7 @@ const PickingMoves: React.FC = () => {
                 hoverable
                 onClick={() =>
                   navigate(`/pickings/${pickingId}/moves/${move.id}`, {
-                    state: { move, pickingTitle },
+                    state: { move, pickingTitle, pickingState: passedPicking?.state || move.state },
                   })
                 }
                 style={{

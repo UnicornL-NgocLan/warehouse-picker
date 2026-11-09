@@ -40,12 +40,20 @@ const MoveLines: React.FC = () => {
 
   const passedMove = (location.state as any)?.move as Move | undefined;
   const pickingTitle = (location.state as any)?.pickingTitle as string | undefined;
+  const passedPickingState = (location.state as any)?.pickingState as string | undefined;
 
   const [currentMove, setCurrentMove] = useState<Move | null>(passedMove || null);
   const [moveLines, setMoveLines] = useState<MoveLine[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [creating, setCreating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Kiểm tra trạng thái phiếu kho hoặc move: nếu đã 'done' hoặc 'cancel' thì chỉ đọc
+  const isReadOnly = useMemo(() => {
+    const pState = passedPickingState;
+    const mState = currentMove?.state || (moveLines.length > 0 ? moveLines[0].moveState : undefined);
+    return pState === 'done' || pState === 'cancel' || mState === 'done' || mState === 'cancel';
+  }, [passedPickingState, currentMove?.state, moveLines]);
 
   // Edit Drawer state
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
@@ -160,6 +168,7 @@ const MoveLines: React.FC = () => {
   // Open Edit Drawer
   const handleOpenEdit = useCallback(
     (line: MoveLine, isNew: boolean = false) => {
+      if (isReadOnly && isNew) return;
       form.resetFields();
       setEditingLine(line);
       setDrawerError(null);
@@ -203,7 +212,7 @@ const MoveLines: React.FC = () => {
 
       setIsDrawerOpen(true);
     },
-    [form, locationOptions, searchLocations, searchLots]
+    [form, isReadOnly, locationOptions, searchLocations, searchLots]
   );
 
   // Handle image files selection from Camera or Gallery
@@ -232,7 +241,7 @@ const MoveLines: React.FC = () => {
 
   // Handle Create Move Line
   const handleCreate = async () => {
-    if (!moveId || creating) return;
+    if (!moveId || creating || isReadOnly) return;
     try {
       setCreating(true);
       const newLine = await pickingService.createMoveLine(parseInt(moveId, 10));
@@ -262,7 +271,7 @@ const MoveLines: React.FC = () => {
 
   // Handle Save (Submit Drawer)
   const handleSave = async () => {
-    if (!editingLine) return;
+    if (!editingLine || isReadOnly) return;
     try {
       const values = await form.validateFields();
       setDrawerError(null);
@@ -350,6 +359,7 @@ const MoveLines: React.FC = () => {
 
   // Handle Delete Move Line
   const handleDelete = (line: MoveLine) => {
+    if (isReadOnly) return;
     const lotLabel = line.lot ? `Lô: ${line.lot.name}` : 'Chưa có lô';
     const qtyLabel = `${formatQty(line.qtyDone)} ${line.uom}`;
 
@@ -504,6 +514,19 @@ const MoveLines: React.FC = () => {
           </div>
         </Card>
 
+        {isReadOnly && (
+          <Alert
+            type="warning"
+            showIcon
+            message={
+              passedPickingState === 'cancel' || currentMove?.state === 'cancel'
+                ? 'Phiếu kho đã bị hủy (Cancel). Chế độ chỉ đọc, không thể chỉnh sửa.'
+                : 'Phiếu kho đã hoàn thành (Done). Chế độ chỉ đọc, không thể chỉnh sửa.'
+            }
+            style={{ marginBottom: 12, borderRadius: 8 }}
+          />
+        )}
+
         {errorMsg && (
           <Alert
             type="error"
@@ -529,22 +552,30 @@ const MoveLines: React.FC = () => {
           </div>
         ) : moveLines.length === 0 ? (
           <div style={{ marginTop: 40, textAlign: 'center' }}>
-            <Empty description="Chưa có dòng soạn hàng. Bấm + để thêm." />
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              loading={creating}
-              onClick={handleCreate}
-              style={{
-                marginTop: 16,
-                backgroundColor: myColor.buttonColor,
-                height: 44,
-                borderRadius: 8,
-                padding: '0 24px',
-              }}
-            >
-              Thêm dòng soạn hàng
-            </Button>
+            <Empty
+              description={
+                isReadOnly
+                  ? 'Phiếu kho đã hoàn tất/hủy và không có dòng soạn hàng nào'
+                  : 'Chưa có dòng soạn hàng. Bấm + để thêm.'
+              }
+            />
+            {!isReadOnly && (
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                loading={creating}
+                onClick={handleCreate}
+                style={{
+                  marginTop: 16,
+                  backgroundColor: myColor.buttonColor,
+                  height: 44,
+                  borderRadius: 8,
+                  padding: '0 24px',
+                }}
+              >
+                Thêm dòng soạn hàng
+              </Button>
+            )}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -599,41 +630,43 @@ const MoveLines: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Actions: Sửa & Xóa with min 48px touch targets */}
-                  <div
-                    style={{
-                      marginTop: 12,
-                      display: 'flex',
-                      justifyContent: 'flex-end',
-                      gap: 12,
-                    }}
-                  >
-                    <Button
-                      icon={<EditOutlined />}
-                      onClick={() => handleOpenEdit(line)}
+                  {/* Actions: Sửa & Xóa (chỉ hiển thị khi phiếu kho chưa done/cancel) */}
+                  {!isReadOnly && (
+                    <div
                       style={{
-                        minHeight: 44,
-                        minWidth: 90,
-                        borderRadius: 6,
-                        fontWeight: 600,
+                        marginTop: 12,
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        gap: 12,
                       }}
                     >
-                      Sửa
-                    </Button>
-                    <Button
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => handleDelete(line)}
-                      style={{
-                        minHeight: 44,
-                        minWidth: 90,
-                        borderRadius: 6,
-                        fontWeight: 600,
-                      }}
-                    >
-                      Xóa
-                    </Button>
-                  </div>
+                      <Button
+                        icon={<EditOutlined />}
+                        onClick={() => handleOpenEdit(line)}
+                        style={{
+                          minHeight: 44,
+                          minWidth: 90,
+                          borderRadius: 6,
+                          fontWeight: 600,
+                        }}
+                      >
+                        Sửa
+                      </Button>
+                      <Button
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => handleDelete(line)}
+                        style={{
+                          minHeight: 44,
+                          minWidth: 90,
+                          borderRadius: 6,
+                          fontWeight: 600,
+                        }}
+                      >
+                        Xóa
+                      </Button>
+                    </div>
+                  )}
                 </Card>
               );
             })}
@@ -641,19 +674,21 @@ const MoveLines: React.FC = () => {
           </div>
         )}
 
-        {/* Floating Action Button (FAB) for adding move line */}
-        <FloatButton
-          icon={<PlusOutlined />}
-          type="primary"
-          style={{
-            right: 24,
-            bottom: 30,
-            width: 56,
-            height: 56,
-          }}
-          tooltip="Thêm dòng soạn hàng"
-          onClick={handleCreate}
-        />
+        {/* Floating Action Button (FAB) for adding move line (chỉ hiển thị khi chưa done/cancel) */}
+        {!isReadOnly && (
+          <FloatButton
+            icon={<PlusOutlined />}
+            type="primary"
+            style={{
+              right: 24,
+              bottom: 30,
+              width: 56,
+              height: 56,
+            }}
+            tooltip="Thêm dòng soạn hàng"
+            onClick={handleCreate}
+          />
+        )}
       </div>
 
       {/* Drawer: Sửa Move Line (Bottom Sheet) */}

@@ -249,6 +249,30 @@ export async function cancelSeaTransport(odoo, uid) {
   });
 }
 
+export async function checkPickingStateAllowed(odoo, pickingId) {
+  if (!pickingId) return;
+  const pId = Array.isArray(pickingId) ? pickingId[0] : parseInt(pickingId, 10);
+  if (!pId) return;
+
+  const records = await new Promise((resolve, reject) => {
+    odoo.execute_kw(
+      "stock.picking",
+      "search_read",
+      [[[["id", "=", pId]], ["id", "state", "name"], 0, 1]],
+      (err, recs) => (err ? reject(err) : resolve(recs || []))
+    );
+  });
+
+  if (records && records.length > 0) {
+    const state = records[0].state;
+    if (state === "done" || state === "cancel") {
+      const stateText = state === "done" ? "đã hoàn thành (Done)" : "đã bị hủy (Cancel)";
+      const nameText = records[0].name ? ` [${records[0].name}]` : "";
+      throw new Error(`Phiếu kho${nameText} ${stateText}, không được phép tạo mới, chỉnh sửa hoặc xóa dòng soạn hàng.`);
+    }
+  }
+}
+
 export async function createMoveLine(odoo, moveId) {
   return new Promise((resolve, reject) => {
     const moveParams = [
@@ -263,6 +287,13 @@ export async function createMoveLine(odoo, moveId) {
         return reject(new Error("Không tìm thấy dòng điều chuyển (stock.move)"));
       }
       const move = moveRecords[0];
+
+      // Kiểm tra trạng thái phiếu kho: nếu đã done hoặc cancel thì không cho tạo dòng mới
+      try {
+        await checkPickingStateAllowed(odoo, move.picking_id);
+      } catch (stateErr) {
+        return reject(stateErr);
+      }
 
       const hasPackaging = Boolean(
         move.product_packaging &&
@@ -400,6 +431,7 @@ export async function updateMoveLine(odoo, lineId, data) {
     let oldRecord = null;
     let hasPackaging = false;
     let packagingName = null;
+    let movePickingId = null;
     // Thông tin stock.move dùng để tính tam suất qty_done
     let moveProductUomQty = 0; // product_uom_qty của stock.move (tổng SL đơn vị yêu cầu)
     let movePackageQty = 0;    // package_qty của stock.move (tổng số thùng yêu cầu)
@@ -421,18 +453,21 @@ export async function updateMoveLine(odoo, lineId, data) {
               odoo.execute_kw(
                 "stock.move",
                 "search_read",
-                [[[["id", "=", oldRecord.move_id[0]]], ["id", "product_packaging", "product_uom_qty", "package_qty"], 0, 1]],
+                [[[["id", "=", oldRecord.move_id[0]]], ["id", "picking_id", "product_packaging", "product_uom_qty", "package_qty"], 0, 1]],
                 (mErr, res) => (mErr ? rejM(mErr) : resM(res || []))
               );
             });
-            if (moveRecs && moveRecs.length > 0 && moveRecs[0].product_packaging) {
-              hasPackaging = true;
-              if (Array.isArray(moveRecs[0].product_packaging)) {
-                packagingName = moveRecs[0].product_packaging[1];
+            if (moveRecs && moveRecs.length > 0) {
+              movePickingId = moveRecs[0].picking_id;
+              if (moveRecs[0].product_packaging) {
+                hasPackaging = true;
+                if (Array.isArray(moveRecs[0].product_packaging)) {
+                  packagingName = moveRecs[0].product_packaging[1];
+                }
+                // Lưu để tính tam suất qty_done = newPkgQty * product_uom_qty / package_qty
+                moveProductUomQty = Number(moveRecs[0].product_uom_qty) || 0;
+                movePackageQty = Number(moveRecs[0].package_qty) || 0;
               }
-              // Lưu để tính tam suất qty_done = newPkgQty * product_uom_qty / package_qty
-              moveProductUomQty = Number(moveRecs[0].product_uom_qty) || 0;
-              movePackageQty = Number(moveRecs[0].package_qty) || 0;
             }
           } catch {
             // Ignore
@@ -441,6 +476,14 @@ export async function updateMoveLine(odoo, lineId, data) {
       }
     } catch (oldErr) {
       // Ignore pre-read error
+    }
+
+    // Kiểm tra trạng thái phiếu kho: nếu đã done hoặc cancel thì không cho sửa
+    try {
+      const pickingIdToCheck = oldRecord?.picking_id || movePickingId;
+      await checkPickingStateAllowed(odoo, pickingIdToCheck);
+    } catch (stateErr) {
+      return reject(stateErr);
     }
 
     const vals = {};
@@ -804,6 +847,7 @@ export async function deleteMoveLine(odoo, lineId) {
     let lineToDel = null;
     let hasPackaging = false;
     let packagingName = null;
+    let movePickingId = null;
 
     try {
       const records = await new Promise((resL, rejL) => {
@@ -822,14 +866,17 @@ export async function deleteMoveLine(odoo, lineId) {
               odoo.execute_kw(
                 "stock.move",
                 "search_read",
-                [[[["id", "=", lineToDel.move_id[0]]], ["id", "product_packaging"], 0, 1]],
+                [[[["id", "=", lineToDel.move_id[0]]], ["id", "picking_id", "product_packaging"], 0, 1]],
                 (mErr, res) => (mErr ? rejM(mErr) : resM(res || []))
               );
             });
-            if (moveRecs && moveRecs.length > 0 && moveRecs[0].product_packaging) {
-              hasPackaging = true;
-              if (Array.isArray(moveRecs[0].product_packaging)) {
-                packagingName = moveRecs[0].product_packaging[1];
+            if (moveRecs && moveRecs.length > 0) {
+              movePickingId = moveRecs[0].picking_id;
+              if (moveRecs[0].product_packaging) {
+                hasPackaging = true;
+                if (Array.isArray(moveRecs[0].product_packaging)) {
+                  packagingName = moveRecs[0].product_packaging[1];
+                }
               }
             }
           } catch {
@@ -839,6 +886,14 @@ export async function deleteMoveLine(odoo, lineId) {
       }
     } catch {
       // Ignore
+    }
+
+    // Kiểm tra trạng thái phiếu kho: nếu đã done hoặc cancel thì không cho xóa
+    try {
+      const pickingIdToCheck = lineToDel?.picking_id || movePickingId;
+      await checkPickingStateAllowed(odoo, pickingIdToCheck);
+    } catch (stateErr) {
+      return reject(stateErr);
     }
 
     odoo.execute_kw("stock.move.line", "unlink", [[[parseInt(lineId, 10)]]], async (err) => {

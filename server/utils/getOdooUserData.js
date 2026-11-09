@@ -812,6 +812,7 @@ export async function getPickingMoves(odoo, pickingId) {
                 : null,
             packageQty: Number(m.package_qty) || 0,
             packageQtyDone: Number(m.package_qty_done) || 0,
+            state: m.state,
           };
         });
 
@@ -827,7 +828,7 @@ export async function getMoveLines(odoo, moveId) {
   return new Promise((resolve, reject) => {
     const moveParams = [
       [["id", "=", parseInt(moveId, 10)]],
-      ["id", "product_id", "product_packaging", "package_qty", "package_qty_done"],
+      ["id", "product_id", "product_packaging", "package_qty", "package_qty_done", "state"],
       0,
       1,
     ];
@@ -967,6 +968,7 @@ export async function getMoveLines(odoo, moveId) {
             tracking,
             hasPackaging,
             packageQty: Number(line.package_qty) || 0,
+            moveState: move.state,
           };
         });
 
