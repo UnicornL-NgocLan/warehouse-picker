@@ -70,16 +70,18 @@ const MoveLines: React.FC = () => {
 
   const [form] = Form.useForm();
   const listEndRef = useRef<HTMLDivElement>(null);
+  const isFetchingRef = useRef<boolean>(false);
 
   // Calculate total picked from lines
   const totalPicked = useMemo(() => {
     return moveLines.reduce((acc, curr) => acc + (Number(curr.qtyDone) || 0), 0);
   }, [moveLines]);
 
-  // Load move lines and refresh move data
+  // Load move lines (chỉ lấy danh sách dòng soạn hàng của moveId)
   const loadData = useCallback(async () => {
-    if (!moveId) return;
+    if (!moveId || isFetchingRef.current) return;
     try {
+      isFetchingRef.current = true;
       setLoading(true);
       setErrorMsg(null);
 
@@ -87,8 +89,8 @@ const MoveLines: React.FC = () => {
       const lines = await pickingService.getMoveLines(numMoveId);
       setMoveLines(lines || []);
 
-      // Also refresh the parent move data if pickingId exists
-      if (pickingId) {
+      // Chỉ fetch lại parent move nếu chưa có thông tin (trường hợp user F5 trực tiếp trang này)
+      if (!passedMove && pickingId) {
         try {
           const allMoves = await pickingService.getPickingMoves(parseInt(pickingId, 10));
           const found = allMoves.find((m) => m.id === numMoveId);
@@ -105,8 +107,9 @@ const MoveLines: React.FC = () => {
       message.error(msg);
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
-  }, [moveId, pickingId]);
+  }, [moveId, pickingId, passedMove]);
 
   useEffect(() => {
     loadData();

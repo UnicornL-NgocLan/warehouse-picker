@@ -634,8 +634,9 @@ export function formatLocationName(rawName) {
 }
 
 // In-memory caches to dramatically speed up stock move requests
-const uomCategoryCache = new Map(); // uomId -> boolean (isUnitCat)
+const uomCategoryCache = new Map();      // uomId    -> boolean (isUnitCat)
 const productCustomUomCache = new Map(); // productId -> string | null (customUom)
+const productTrackingCache = new Map();  // productId -> string (tracking: 'none'|'lot'|'serial')
 
 export async function getPickingMoves(odoo, pickingId) {
   return new Promise((resolve, reject) => {
@@ -646,7 +647,6 @@ export async function getPickingMoves(odoo, pickingId) {
         "product_id",
         "product_uom_qty",
         "product_uom",
-        "sale_line_id",
         "reserved_availability",
         "state",
         "product_packaging",
@@ -664,33 +664,12 @@ export async function getPickingMoves(odoo, pickingId) {
       try {
         const moveIds = moves.map((m) => m.id);
         const productIds = Array.from(new Set(moves.map((m) => m.product_id[0])));
-        const saleLineIds = Array.from(
-          new Set(
-            moves
-              .filter((m) => m.sale_line_id && Array.isArray(m.sale_line_id))
-              .map((m) => m.sale_line_id[0])
-          )
-        );
 
         // Filter products not yet in cache
         const uncachedProductIds = productIds.filter((pId) => !productCustomUomCache.has(pId));
 
-        // Fetch sale.order.line, stock.move.line, and uncached product.product IN PARALLEL!
-        const [solRecords, moveLines, productRecs] = await Promise.all([
-          saleLineIds.length > 0
-            ? new Promise((resSol) => {
-                const solParams = [
-                  [["id", "in", saleLineIds]],
-                  ["id", "product_uom_qty", "product_uom"],
-                  0,
-                  saleLineIds.length,
-                ];
-                odoo.execute_kw("sale.order.line", "search_read", [solParams], (sErr, sRecs) => {
-                  resSol(sRecs || []);
-                });
-              })
-            : Promise.resolve([]),
-
+        // Fetch stock.move.line và uncached product.product SONG SONG
+        const [moveLines, productRecs] = await Promise.all([
           moveIds.length > 0
             ? new Promise((resML) => {
                 const mlParams = [
@@ -719,11 +698,6 @@ export async function getPickingMoves(odoo, pickingId) {
               })
             : Promise.resolve([]),
         ]);
-
-        const saleLineMap = {};
-        (solRecords || []).forEach((sol) => {
-          saleLineMap[sol.id] = sol;
-        });
 
         const pickedQtyMap = {};
         const reservedQtyMap = {};
@@ -781,18 +755,7 @@ export async function getPickingMoves(odoo, pickingId) {
         }
 
         const result = moves.map((m) => {
-          const solId = m.sale_line_id && Array.isArray(m.sale_line_id) ? m.sale_line_id[0] : null;
-          const sol = solId ? saleLineMap[solId] : null;
-          const orderedFromPicking = !sol;
-
-          const defaultOrderedUom =
-            sol && Array.isArray(sol.product_uom)
-              ? sol.product_uom[1]
-              : Array.isArray(m.product_uom)
-              ? m.product_uom[1]
-              : "";
-          const defaultPickedUom = Array.isArray(m.product_uom) ? m.product_uom[1] : "";
-
+          const defaultUom = Array.isArray(m.product_uom) ? m.product_uom[1] : "";
           const customUom = productCustomUomCache.get(m.product_id[0]);
 
           const hasPackaging = Boolean(
@@ -814,14 +777,14 @@ export async function getPickingMoves(odoo, pickingId) {
             const movePkgDone = Number(m.package_qty_done) || 0;
             // Ưu tiên tổng số lượng package_qty thực tế từ các dòng stock.move.line
             pickedQty = linesPkgDone > 0 ? linesPkgDone : movePkgDone;
-            orderedUom = packagingName || defaultOrderedUom;
-            pickedUom = packagingName || defaultPickedUom;
+            orderedUom = packagingName || defaultUom;
+            pickedUom = packagingName || defaultUom;
           } else {
-            // Khi không có product_packaging: tính theo đơn vị gốc
-            orderedQty = sol ? Number(sol.product_uom_qty) : Number(m.product_uom_qty);
-            orderedUom = customUom || defaultOrderedUom;
+            // Luôn lấy từ trường product_uom_qty của stock.move
+            orderedQty = Number(m.product_uom_qty) || 0;
+            orderedUom = customUom || defaultUom;
             pickedQty = pickedQtyMap[m.id] || 0;
-            pickedUom = customUom || defaultPickedUom;
+            pickedUom = customUom || defaultUom;
           }
 
           const reservedFromLines = Number(reservedQtyMap[m.id]) || 0;
@@ -837,7 +800,7 @@ export async function getPickingMoves(odoo, pickingId) {
             },
             orderedQty: Number(orderedQty) || 0,
             orderedUom,
-            orderedFromPicking,
+            orderedFromPicking: true,
             pickedQty: Number(pickedQty) || 0,
             pickedUom,
             reservedQty: Number(reservedQty) || 0,
@@ -884,55 +847,12 @@ export async function getMoveLines(odoo, moveId) {
         hasPackaging && Array.isArray(move.product_packaging) ? move.product_packaging[1] : null;
 
       try {
-        let tracking = "none";
-        let customUom = null;
-        try {
-          const productRecords = await new Promise((resP, rejP) => {
-            odoo.execute_kw(
-              "product.product",
-              "search_read",
-              [[[["id", "=", productId]], ["id", "tracking", "uom_id", "sea_unit_of_measure"], 0, 1]],
-              (pErr, pRecs) => {
-                if (pErr) return rejP(pErr);
-                resP(pRecs || []);
-              }
-            );
-          });
-          if (productRecords && productRecords.length > 0) {
-            const pObj = productRecords[0];
-            if (pObj.tracking) {
-              tracking = pObj.tracking;
-            }
+        // Kiểm tra cache module-level trước — tránh round-trip Odoo không cần thiết
+        const cachedCustomUom = productCustomUomCache.get(productId);
+        const cachedTracking  = productTrackingCache.get(productId);
+        const needsProductFetch = cachedCustomUom === undefined || cachedTracking === undefined;
 
-            if (pObj.uom_id && Array.isArray(pObj.uom_id)) {
-              let isUnitCat = String(pObj.uom_id[1]).toLowerCase().includes("unit");
-              if (!isUnitCat) {
-                try {
-                  const uomRecs = await new Promise((resU, rejU) => {
-                    odoo.execute_kw(
-                      "uom.uom",
-                      "search_read",
-                      [[[["id", "=", pObj.uom_id[0]]], ["id", "name", "category_id"], 0, 1]],
-                      (uErr, uData) => (uErr ? rejU(uErr) : resU(uData || []))
-                    );
-                  });
-                  if (uomRecs && uomRecs.length > 0 && uomRecs[0].category_id) {
-                    isUnitCat = String(uomRecs[0].category_id[1]).toLowerCase().includes("unit");
-                  }
-                } catch {
-                  // Ignore
-                }
-              }
-
-              if (isUnitCat && pObj.sea_unit_of_measure && Array.isArray(pObj.sea_unit_of_measure)) {
-                customUom = pObj.sea_unit_of_measure[1];
-              }
-            }
-          }
-        } catch (pErr) {
-          tracking = "none";
-        }
-
+        // Fetch product.product và stock.move.line SONG SONG (thay vì tuần tự)
         const lineParams = [
           [["move_id", "=", parseInt(moveId, 10)]],
           ["id", "location_dest_id", "location_id", "lot_id", "qty_done", "product_uom_id", "product_id", "package_qty"],
@@ -940,12 +860,74 @@ export async function getMoveLines(odoo, moveId) {
           1000,
           "id asc",
         ];
-        const lines = await new Promise((resL, rejL) => {
-          odoo.execute_kw("stock.move.line", "search_read", [lineParams], (lErr, lRecs) => {
-            if (lErr) return rejL(lErr);
-            resL(lRecs || []);
-          });
-        });
+
+        const [productResult, lines] = await Promise.all([
+          needsProductFetch
+            ? new Promise((resP) => {
+                odoo.execute_kw(
+                  "product.product",
+                  "search_read",
+                  [[[["id", "=", productId]], ["id", "tracking", "uom_id", "sea_unit_of_measure"], 0, 1]],
+                  (pErr, pRecs) => resP(pRecs || [])
+                );
+              })
+            : Promise.resolve(null), // Đã có cache, bỏ qua
+
+          new Promise((resL, rejL) => {
+            odoo.execute_kw("stock.move.line", "search_read", [lineParams], (lErr, lRecs) => {
+              if (lErr) return rejL(lErr);
+              resL(lRecs || []);
+            });
+          }),
+        ]);
+
+        // Dùng giá trị cache nếu không cần fetch
+        let tracking = cachedTracking ?? "none";
+        let customUom = cachedCustomUom ?? null;
+
+        if (needsProductFetch && productResult && productResult.length > 0) {
+          const pObj = productResult[0];
+          tracking = pObj.tracking || "none";
+
+          let isUnitCat =
+            pObj.uom_id && Array.isArray(pObj.uom_id)
+              ? String(pObj.uom_id[1]).toLowerCase().includes("unit")
+              : false;
+
+          if (!isUnitCat && pObj.uom_id && Array.isArray(pObj.uom_id)) {
+            const uomId = pObj.uom_id[0];
+            if (uomCategoryCache.has(uomId)) {
+              // Dùng cache UoM category — tránh round-trip Odoo
+              isUnitCat = uomCategoryCache.get(uomId);
+            } else {
+              try {
+                const uomRecs = await new Promise((resU) => {
+                  odoo.execute_kw(
+                    "uom.uom",
+                    "search_read",
+                    [[[["id", "=", uomId]], ["id", "name", "category_id"], 0, 1]],
+                    (uErr, uData) => resU(uData || [])
+                  );
+                });
+                if (uomRecs && uomRecs.length > 0 && uomRecs[0].category_id) {
+                  isUnitCat = String(uomRecs[0].category_id[1]).toLowerCase().includes("unit");
+                }
+                uomCategoryCache.set(uomId, isUnitCat);
+              } catch {
+                // Ignore
+              }
+            }
+          }
+
+          customUom =
+            isUnitCat && pObj.sea_unit_of_measure && Array.isArray(pObj.sea_unit_of_measure)
+              ? pObj.sea_unit_of_measure[1]
+              : null;
+
+          // Lưu vào cache để lần sau khỏi query lại
+          productTrackingCache.set(productId, tracking);
+          productCustomUomCache.set(productId, customUom);
+        }
 
         const result = (lines || []).map((line) => {
           const locName =
@@ -961,7 +943,7 @@ export async function getMoveLines(odoo, moveId) {
           const effectiveQty = hasPackaging
             ? (Number(line.package_qty) || 0)
             : (Number(line.qty_done) || 0);
-          const effectiveUom = (hasPackaging && packagingName)
+          const effectiveUom = hasPackaging && packagingName
             ? packagingName
             : (customUom || defaultLineUom);
 
@@ -999,38 +981,35 @@ export async function getMoveLines(odoo, moveId) {
 export async function getLocations(odoo, query, limit = 50) {
   return new Promise((resolve, reject) => {
     const maxLimit = Math.min(parseInt(limit, 10) || 50, 50);
-    const domain = [["usage", "=", "internal"]];
+
+    let domain;
     if (query && query.trim()) {
-      domain.push(["complete_name", "ilike", query.trim()]);
+      // Có từ khóa tìm kiếm: lọc internal + tên khớp
+      domain = [
+        ["usage", "=", "internal"],
+        ["complete_name", "ilike", query.trim()],
+      ];
+    } else {
+      // Không có từ khóa: lấy internal HOẶC ID 288 (địa điểm mặc định)
+      // Dùng OR domain để lấy trong 1 round-trip thay vì 2
+      domain = ["|", ["id", "=", 288], ["usage", "=", "internal"]];
     }
+
     const params = [[domain, ["id", "complete_name", "name"], 0, maxLimit, "complete_name asc"]];
-    odoo.execute_kw("stock.location", "search_read", params, async (err, records) => {
+    odoo.execute_kw("stock.location", "search_read", params, (err, records) => {
       if (err) return reject(err);
+
       const result = (records || []).map((loc) => ({
         id: loc.id,
         name: formatLocationName(loc.complete_name || loc.name),
       }));
 
-      // Đảm bảo địa điểm nguồn mặc định (ID 288) luôn có trong danh sách lựa chọn
-      if (!query && !result.some((loc) => loc.id === 288)) {
-        try {
-          const loc288Records = await new Promise((res288, rej288) => {
-            odoo.execute_kw(
-              "stock.location",
-              "search_read",
-              [[[["id", "=", 288]], ["id", "complete_name", "name"], 0, 1]],
-              (e288, r288) => (e288 ? rej288(e288) : res288(r288 || []))
-            );
-          });
-          if (loc288Records && loc288Records.length > 0) {
-            const loc288 = loc288Records[0];
-            result.unshift({
-              id: loc288.id,
-              name: formatLocationName(loc288.complete_name || loc288.name),
-            });
-          }
-        } catch (e288) {
-          // Bỏ qua lỗi nếu không tìm thấy 288
+      // Đảm bảo ID 288 luôn ở đầu danh sách
+      if (!query) {
+        const idx = result.findIndex((loc) => loc.id === 288);
+        if (idx > 0) {
+          const [loc288] = result.splice(idx, 1);
+          result.unshift(loc288);
         }
       }
 

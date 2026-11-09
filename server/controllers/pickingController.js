@@ -16,6 +16,31 @@ const parsePositiveInt = (val) => {
   return !isNaN(num) && num > 0 ? num : null;
 };
 
+// Server-side in-memory cache cho getPickingMoves
+// key: pickingId (string) → { data, expiresAt }
+const pickingMovesCache = new Map();
+const PICKING_MOVES_TTL_MS = 8000; // 8 giây — đủ lâu để SWR pattern ở client không double-fetch
+
+const getPickingMovesCached = async (odoo, pickingId) => {
+  const cacheKey = String(pickingId);
+  const cached = pickingMovesCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
+  const data = await getPickingMoves(odoo, pickingId);
+  pickingMovesCache.set(cacheKey, { data, expiresAt: Date.now() + PICKING_MOVES_TTL_MS });
+  return data;
+};
+
+// Xóa cache khi có thay đổi dữ liệu (create/update/delete move line)
+const invalidatePickingMovesCache = (pickingId) => {
+  if (pickingId) {
+    pickingMovesCache.delete(String(pickingId));
+  } else {
+    pickingMovesCache.clear();
+  }
+};
+
 export const pickingCtrl = {
   getPickings: async (req, res) => {
     try {
@@ -44,7 +69,7 @@ export const pickingCtrl = {
         return res.status(400).json({ msg: "Mã phiếu kho không hợp lệ" });
       }
 
-      const moves = await getPickingMoves(req.odoo, pickingId);
+      const moves = await getPickingMovesCached(req.odoo, pickingId);
       return res.status(200).json({ data: moves });
     } catch (error) {
       console.error("Error in getPickingMoves:", error.message || error);
@@ -75,6 +100,7 @@ export const pickingCtrl = {
       }
 
       const newLine = await createMoveLine(req.odoo, moveId);
+      invalidatePickingMovesCache(); // Xóa cache sau khi tạo dòng mới
       return res.status(201).json({ data: newLine });
     } catch (error) {
       console.error("Error in createMoveLine:", error.message || error);
@@ -133,6 +159,7 @@ export const pickingCtrl = {
       }
 
       const updatedLine = await updateMoveLine(req.odoo, lineId, updateData);
+      invalidatePickingMovesCache(); // Xóa cache sau khi cập nhật dòng
       return res.status(200).json({ data: updatedLine });
     } catch (error) {
       console.error("Error in updateMoveLine:", error.message || error);
@@ -148,6 +175,7 @@ export const pickingCtrl = {
       }
 
       await deleteMoveLine(req.odoo, lineId);
+      invalidatePickingMovesCache(); // Xóa cache sau khi xóa dòng
       return res.status(200).json({ data: true });
     } catch (error) {
       console.error("Error in deleteMoveLine:", error.message || error);
