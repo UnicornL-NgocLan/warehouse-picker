@@ -47,6 +47,28 @@ export type UpdateMoveLinePayload = {
   lotId?: number | null;
   qtyDone?: number | string;
   imageUrls?: string[];
+  skipChatter?: boolean;
+};
+
+export type LogChatterPayload = {
+  pickingId: number;
+  lineId?: number;
+  productName: string;
+  oldRecord?: {
+    qty?: number;
+    lot?: string;
+    location?: string;
+    locationDest?: string;
+  };
+  newRecord?: {
+    qty?: number;
+    lot?: string;
+    location?: string;
+    locationDest?: string;
+  };
+  uom?: string;
+  imageUrls?: string[];
+  actionType?: 'update' | 'images_only';
 };
 
 export type GetPickingsResponse = {

@@ -641,177 +641,7 @@ export async function updateMoveLine(odoo, lineId, data) {
               ? line.location_dest_id[1]
               : "";
 
-          // Post Chatter Log Note on Stock Picking
-          let pickingId =
-            (line.picking_id && Array.isArray(line.picking_id) ? line.picking_id[0] : null) ||
-            (oldRecord?.picking_id && Array.isArray(oldRecord.picking_id) ? oldRecord.picking_id[0] : null);
-
-          if (!pickingId && line.move_id && Array.isArray(line.move_id)) {
-            try {
-              const mRecs = await new Promise((resM, rejM) => {
-                odoo.execute_kw(
-                  "stock.move",
-                  "search_read",
-                  [[[["id", "=", line.move_id[0]]], ["id", "picking_id"], 0, 1]],
-                  (mErr, res) => (mErr ? rejM(mErr) : resM(res || []))
-                );
-              });
-              if (mRecs && mRecs.length > 0 && mRecs[0].picking_id) {
-                pickingId = Array.isArray(mRecs[0].picking_id) ? mRecs[0].picking_id[0] : mRecs[0].picking_id;
-              }
-            } catch {
-              // Ignore
-            }
-          }
-
-          // Cập nhật trường package_qty_done trên stock.move nếu có quy cách đóng gói
-          const currentMoveId =
-            (line.move_id && Array.isArray(line.move_id) ? line.move_id[0] : null) ||
-            (oldRecord?.move_id && Array.isArray(oldRecord.move_id) ? oldRecord.move_id[0] : null);
-
-          if (hasPackaging && currentMoveId) {
-            try {
-              const allMLs = await new Promise((resML) => {
-                odoo.execute_kw(
-                  "stock.move.line",
-                  "search_read",
-                  [[[["move_id", "=", currentMoveId]], ["id", "package_qty"], 0, 1000]],
-                  (mle, mlr) => resML(mlr || [])
-                );
-              });
-              const totalPkgDone = (allMLs || []).reduce((sum, ml) => sum + (Number(ml.package_qty) || 0), 0);
-              odoo.execute_kw(
-                "stock.move",
-                "write",
-                [[[currentMoveId], { package_qty_done: totalPkgDone }]],
-                () => {}
-              );
-            } catch {
-              // Bỏ qua nếu trường package_qty_done trên stock.move không cho ghi trực tiếp
-            }
-          }
-
-          if (pickingId) {
-            try {
-              const productName = Array.isArray(line.product_id)
-                ? line.product_id[1]
-                : oldRecord && Array.isArray(oldRecord.product_id)
-                ? oldRecord.product_id[1]
-                : "Sản phẩm";
-
-              const oldLotName = oldRecord && Array.isArray(oldRecord.lot_id) ? oldRecord.lot_id[1] : "(Không có)";
-              const newLotName = Array.isArray(line.lot_id) ? line.lot_id[1] : "(Không có)";
-
-              const oldLocName = oldRecord && Array.isArray(oldRecord.location_id)
-                ? formatLocationName(oldRecord.location_id[1])
-                : "Chưa xác định";
-              const currentLocName = formatLocationName(locName);
-
-              const oldLocDestName = oldRecord && Array.isArray(oldRecord.location_dest_id)
-                ? formatLocationName(oldRecord.location_dest_id[1])
-                : "Chưa xác định";
-              const currentLocDestName = formatLocationName(locDestName);
-
-              const oldQty = oldRecord
-                ? (hasPackaging ? (Number(oldRecord.package_qty) || 0) : (Number(oldRecord.qty_done) || 0))
-                : 0;
-              const newQty = effectiveQty;
-
-              const lotHtml =
-                oldLotName !== newLotName
-                  ? `${oldLotName} &rarr; <b>${newLotName}</b>`
-                  : `<b>${newLotName}</b>`;
-
-              const locHtml =
-                oldLocName !== currentLocName
-                  ? `${oldLocName} &rarr; <b>${currentLocName}</b>`
-                  : `<b>${currentLocName}</b>`;
-
-              const locDestHtml =
-                oldLocDestName !== currentLocDestName
-                  ? `${oldLocDestName} &rarr; <b>${currentLocDestName}</b>`
-                  : `<b>${currentLocDestName}</b>`;
-
-              const qtyHtml =
-                oldQty !== newQty
-                  ? `${oldQty} &rarr; <b>${newQty} ${finalUom}</b>`
-                  : `<b>${newQty} ${finalUom}</b>`;
-
-              let imagesHtml = "";
-              if (Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
-                const urlList = data.imageUrls
-                  .map(
-                    (url, idx) =>
-                      `<li style="margin-bottom: 4px;"><a href="${url}" target="_blank" style="color: #0f4c81; text-decoration: underline;">Hình ảnh ${idx + 1} (${url})</a></li>`
-                  )
-                  .join("");
-
-                const imgThumbs = data.imageUrls
-                  .map(
-                    (url, idx) =>
-                      `<a href="${url}" target="_blank" style="display: inline-block; margin-right: 8px; margin-top: 6px;"><img src="${url}" alt="Hình ${idx + 1}" style="width: 100px; height: 100px; object-fit: cover; border-radius: 4px; border: 1px solid #d9d9d9;" /></a>`
-                  )
-                  .join("");
-
-                imagesHtml = `
-                  <li style="margin-top: 8px;">
-                    <b>Hình ảnh đính kèm (${data.imageUrls.length}):</b>
-                    <ul style="margin: 4px 0 6px 0; padding-left: 18px;">
-                      ${urlList}
-                    </ul>
-                    <div style="margin-top: 6px;">
-                      ${imgThumbs}
-                    </div>
-                  </li>
-                `;
-              }
-
-              const chatterBody = `
-                <div style="font-size: 13px; line-height: 1.5;">
-                  <p style="margin: 0 0 6px 0; font-weight: bold; color: #0f4c81;">
-                    [Web Soạn Hàng] Cập nhật dòng soạn hàng
-                  </p>
-                  <ul style="margin: 0; padding-left: 18px;">
-                    <li><b>Sản phẩm:</b> ${productName}</li>
-                    <li><b>Số lượng:</b> ${qtyHtml}</li>
-                    <li><b>Số lô:</b> ${lotHtml}</li>
-                    <li><b>Địa điểm nguồn:</b> ${locHtml}</li>
-                    <li><b>Địa điểm đích:</b> ${locDestHtml}</li>
-                    ${imagesHtml}
-                  </ul>
-                </div>
-              `.trim();
-
-              const postParams = [
-                [[parseInt(pickingId, 10)]],
-                {
-                  body: chatterBody,
-                  message_type: "comment",
-                  subtype: "mail.mt_note",
-                },
-              ];
-
-              odoo.execute_kw("stock.picking", "message_post", postParams, (postErr) => {
-                if (postErr) {
-                  // Retry without subtype in case mail.mt_note differs
-                  odoo.execute_kw(
-                    "stock.picking",
-                    "message_post",
-                    [[[parseInt(pickingId, 10)]], { body: chatterBody, message_type: "comment" }],
-                    (retryErr) => {
-                      if (retryErr) {
-                        console.error(`Lỗi log chatter picking #${pickingId}:`, retryErr?.message || retryErr);
-                      }
-                    }
-                  );
-                }
-              });
-            } catch (chatErr) {
-              console.error("Lỗi tạo nội dung chatter:", chatErr);
-            }
-          }
-
-          resolve({
+          const result = {
             id: line.id,
             locationDest: {
               id: Array.isArray(line.location_dest_id) ? line.location_dest_id[0] : 0,
@@ -831,6 +661,108 @@ export async function updateMoveLine(odoo, lineId, data) {
             tracking,
             hasPackaging,
             packageQty: Number(line.package_qty) || 0,
+          };
+
+          // Trả kết quả ngay lập tức cho client không phải chờ
+          resolve(result);
+
+          // Xử lý background tách biệt: cập nhật package_qty_done và log chatter
+          setImmediate(async () => {
+            try {
+              const currentMoveId =
+                (line.move_id && Array.isArray(line.move_id) ? line.move_id[0] : null) ||
+                (oldRecord?.move_id && Array.isArray(oldRecord.move_id) ? oldRecord.move_id[0] : null);
+
+              // Cập nhật trường package_qty_done trên stock.move nếu có quy cách đóng gói
+              if (hasPackaging && currentMoveId) {
+                try {
+                  const allMLs = await new Promise((resML) => {
+                    odoo.execute_kw(
+                      "stock.move.line",
+                      "search_read",
+                      [[[["move_id", "=", currentMoveId]], ["id", "package_qty"], 0, 1000]],
+                      (mle, mlr) => resML(mlr || [])
+                    );
+                  });
+                  const totalPkgDone = (allMLs || []).reduce((sum, ml) => sum + (Number(ml.package_qty) || 0), 0);
+                  odoo.execute_kw(
+                    "stock.move",
+                    "write",
+                    [[[currentMoveId], { package_qty_done: totalPkgDone }]],
+                    () => {}
+                  );
+                } catch {
+                  // Bỏ qua nếu trường package_qty_done trên stock.move không cho ghi trực tiếp
+                }
+              }
+
+              // Nếu có yêu cầu skipChatter (ví dụ ảnh đang được upload ở background và sẽ ghi log sau)
+              if (data.skipChatter) {
+                return;
+              }
+
+              let pickingId =
+                (line.picking_id && Array.isArray(line.picking_id) ? line.picking_id[0] : null) ||
+                (oldRecord?.picking_id && Array.isArray(oldRecord.picking_id) ? oldRecord.picking_id[0] : null) ||
+                movePickingId;
+
+              if (!pickingId && currentMoveId) {
+                try {
+                  const mRecs = await new Promise((resM, rejM) => {
+                    odoo.execute_kw(
+                      "stock.move",
+                      "search_read",
+                      [[[["id", "=", currentMoveId]], ["id", "picking_id"], 0, 1]],
+                      (mErr, res) => (mErr ? rejM(mErr) : resM(res || []))
+                    );
+                  });
+                  if (mRecs && mRecs.length > 0 && mRecs[0].picking_id) {
+                    pickingId = Array.isArray(mRecs[0].picking_id) ? mRecs[0].picking_id[0] : mRecs[0].picking_id;
+                  }
+                } catch {
+                  // Ignore
+                }
+              }
+
+              if (pickingId) {
+                const productName = Array.isArray(line.product_id)
+                  ? line.product_id[1]
+                  : oldRecord && Array.isArray(oldRecord.product_id)
+                  ? oldRecord.product_id[1]
+                  : "Sản phẩm";
+
+                const oldLotName = oldRecord && Array.isArray(oldRecord.lot_id) ? oldRecord.lot_id[1] : "(Không có)";
+                const newLotName = Array.isArray(line.lot_id) ? line.lot_id[1] : "(Không có)";
+
+                const oldLocName = oldRecord && Array.isArray(oldRecord.location_id)
+                  ? formatLocationName(oldRecord.location_id[1])
+                  : "Chưa xác định";
+                const currentLocName = formatLocationName(locName);
+
+                const oldLocDestName = oldRecord && Array.isArray(oldRecord.location_dest_id)
+                  ? formatLocationName(oldRecord.location_dest_id[1])
+                  : "Chưa xác định";
+                const currentLocDestName = formatLocationName(locDestName);
+
+                const oldQty = oldRecord
+                  ? (hasPackaging ? (Number(oldRecord.package_qty) || 0) : (Number(oldRecord.qty_done) || 0))
+                  : 0;
+                const newQty = effectiveQty;
+
+                await logMoveLineChatter(odoo, {
+                  pickingId,
+                  lineId: line.id,
+                  productName,
+                  oldRecord: { qty: oldQty, lot: oldLotName, location: oldLocName, locationDest: oldLocDestName },
+                  newRecord: { qty: newQty, lot: newLotName, location: currentLocName, locationDest: currentLocDestName },
+                  uom: finalUom,
+                  imageUrls: data.imageUrls || [],
+                  actionType: "update",
+                });
+              }
+            } catch (bgErr) {
+              console.error("Lỗi background task updateMoveLine:", bgErr?.message || bgErr);
+            }
           });
         } catch (postErr) {
           reject(postErr);
@@ -963,3 +895,138 @@ export async function deleteMoveLine(odoo, lineId) {
     });
   });
 }
+
+/**
+ * Ghi log chatter vào phiếu kho (stock.picking) - xử lý background
+ * Dùng cho cả trường hợp cập nhật số lượng và đính kèm hình ảnh
+ */
+export async function logMoveLineChatter(odoo, params) {
+  const {
+    pickingId,
+    productName = "Sản phẩm",
+    oldRecord,
+    newRecord,
+    uom = "",
+    imageUrls = [],
+    actionType = "update",
+  } = params || {};
+
+  const pId = parseInt(pickingId, 10);
+  if (!pId || isNaN(pId)) return;
+
+  try {
+    let imagesHtml = "";
+    if (Array.isArray(imageUrls) && imageUrls.length > 0) {
+      const urlList = imageUrls
+        .map(
+          (url, idx) =>
+            `<li style="margin-bottom: 4px;"><a href="${url}" target="_blank" style="color: #0f4c81; text-decoration: underline;">Hình ảnh ${idx + 1} (${url})</a></li>`
+        )
+        .join("");
+
+      const imgThumbs = imageUrls
+        .map(
+          (url, idx) =>
+            `<a href="${url}" target="_blank" style="display: inline-block; margin-right: 8px; margin-top: 6px;"><img src="${url}" alt="Hình ${idx + 1}" style="width: 100px; height: 100px; object-fit: cover; border-radius: 4px; border: 1px solid #d9d9d9;" /></a>`
+        )
+        .join("");
+
+      imagesHtml = `
+        <li style="margin-top: 8px;">
+          <b>Hình ảnh đính kèm (${imageUrls.length}):</b>
+          <ul style="margin: 4px 0 6px 0; padding-left: 18px;">
+            ${urlList}
+          </ul>
+          <div style="margin-top: 6px;">
+            ${imgThumbs}
+          </div>
+        </li>
+      `;
+    }
+
+    let detailItems = "";
+    if (actionType === "images_only") {
+      detailItems = `
+        <li><b>Sản phẩm:</b> ${productName}</li>
+        ${newRecord?.qty !== undefined ? `<li><b>Số lượng:</b> <b>${newRecord.qty} ${uom}</b></li>` : ""}
+        ${newRecord?.lot ? `<li><b>Số lô:</b> <b>${newRecord.lot}</b></li>` : ""}
+        ${newRecord?.location ? `<li><b>Địa điểm:</b> <b>${newRecord.location}</b></li>` : ""}
+        ${imagesHtml}
+      `;
+    } else {
+      const oldQty = oldRecord?.qty !== undefined ? oldRecord.qty : 0;
+      const newQty = newRecord?.qty !== undefined ? newRecord.qty : oldQty;
+      const qtyHtml =
+        oldQty !== newQty
+          ? `${oldQty} &rarr; <b>${newQty} ${uom}</b>`
+          : `<b>${newQty} ${uom}</b>`;
+
+      const oldLot = oldRecord?.lot || "(Không có)";
+      const newLot = newRecord?.lot || "(Không có)";
+      const lotHtml =
+        oldLot !== newLot ? `${oldLot} &rarr; <b>${newLot}</b>` : `<b>${newLot}</b>`;
+
+      const oldLoc = oldRecord?.location || "Chưa xác định";
+      const newLoc = newRecord?.location || "Chưa xác định";
+      const locHtml =
+        oldLoc !== newLoc ? `${oldLoc} &rarr; <b>${newLoc}</b>` : `<b>${newLoc}</b>`;
+
+      const oldLocDest = oldRecord?.locationDest || "Chưa xác định";
+      const newLocDest = newRecord?.locationDest || "Chưa xác định";
+      const locDestHtml =
+        oldLocDest !== newLocDest ? `${oldLocDest} &rarr; <b>${newLocDest}</b>` : `<b>${newLocDest}</b>`;
+
+      detailItems = `
+        <li><b>Sản phẩm:</b> ${productName}</li>
+        <li><b>Số lượng:</b> ${qtyHtml}</li>
+        <li><b>Số lô:</b> ${lotHtml}</li>
+        <li><b>Địa điểm nguồn:</b> ${locHtml}</li>
+        <li><b>Địa điểm đích:</b> ${locDestHtml}</li>
+        ${imagesHtml}
+      `;
+    }
+
+    const titleText =
+      actionType === "images_only"
+        ? "📸 [Web Soạn Hàng] Đính kèm hình ảnh dòng soạn hàng"
+        : "📦 [Web Soạn Hàng] Cập nhật dòng soạn hàng";
+
+    const chatterBody = `
+      <div style="font-size: 13px; line-height: 1.5;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; color: #0f4c81;">
+          ${titleText}
+        </p>
+        <ul style="margin: 0; padding-left: 18px;">
+          ${detailItems}
+        </ul>
+      </div>
+    `.trim();
+
+    const postParams = [
+      [[pId]],
+      {
+        body: chatterBody,
+        message_type: "comment",
+        subtype: "mail.mt_note",
+      },
+    ];
+
+    odoo.execute_kw("stock.picking", "message_post", postParams, (postErr) => {
+      if (postErr) {
+        odoo.execute_kw(
+          "stock.picking",
+          "message_post",
+          [[[pId]], { body: chatterBody, message_type: "comment" }],
+          (retryErr) => {
+            if (retryErr) {
+              console.error(`Lỗi log chatter picking #${pId}:`, retryErr?.message || retryErr);
+            }
+          }
+        );
+      }
+    });
+  } catch (err) {
+    console.error("Lỗi trong logMoveLineChatter:", err?.message || err);
+  }
+}
+

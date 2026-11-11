@@ -24,7 +24,8 @@ import { pickingService } from 'services/pickingService';
 import { Move, MoveLine, Ref } from 'interface/picking';
 import { formatQty } from 'helpers/formatNumber';
 import { formatLocationName } from 'helpers/formatLocation';
-import { fileToBase64, uploadMultipleImagesToDropBox } from 'helpers/dropboxUpload';
+import { fileToBase64 } from 'helpers/dropboxUpload';
+import { queueBackgroundUpload } from 'helpers/backgroundUploader';
 import { getErrorMessage } from 'helpers/getErrorMessage';
 import { myColor } from 'color';
 import { clearMovesCache } from './PickingMoves';
@@ -71,8 +72,6 @@ const MoveLines: React.FC = () => {
 
   // Images state for edit drawer
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
-  const [uploadingImages, setUploadingImages] = useState<boolean>(false);
-  const [uploadStatus, setUploadStatus] = useState<string>('');
   const fileInputCameraRef = useRef<HTMLInputElement>(null);
   const fileInputGalleryRef = useRef<HTMLInputElement>(null);
 
@@ -173,7 +172,6 @@ const MoveLines: React.FC = () => {
       setEditingLine(line);
       setDrawerError(null);
       setSelectedImages([]);
-      setUploadStatus('');
 
       // Prepopulate options with current line's location and lot
       const initialLocs: Ref[] = [];
@@ -300,37 +298,61 @@ const MoveLines: React.FC = () => {
         setEditingLine(null);
         form.resetFields();
         setSelectedImages([]);
-        setUploadStatus('');
         return;
       }
 
-      let imageUrls: string[] = [];
-      if (selectedImages.length > 0) {
-        try {
-          setUploadingImages(true);
-          setUploadStatus(`Đang tải ảnh lên Dropbox (0/${selectedImages.length})...`);
-          imageUrls = await uploadMultipleImagesToDropBox(selectedImages, (curr, total) => {
-            setUploadStatus(`Đang tải ảnh lên Dropbox (${curr}/${total})...`);
-          });
-        } catch (uploadErr) {
-          const msg = getErrorMessage(uploadErr);
-          setDrawerError(msg);
-          message.error(msg);
-          setUploadingImages(false);
-          setUploadStatus('');
-          return;
-        } finally {
-          setUploadingImages(false);
-          setUploadStatus('');
-        }
+      const imagesToUpload = [...selectedImages];
+      const currentLine = editingLine;
+      const currentPickingId = pickingId ? parseInt(pickingId, 10) : 0;
+      const productName = currentMove?.product?.name || 'Sản phẩm';
+      const uom = currentLine.uom || currentMove?.pickedUom || currentMove?.orderedUom || '';
+
+      const selectedLoc = locationOptions.find((l) => l.id === values.locationId);
+      const selectedLot = lotOptions.find((l) => l.id === values.lotId);
+
+      const oldRecord = {
+        qty: Number(currentLine.qtyDone) || 0,
+        lot: currentLine.lot?.name || '(Không có)',
+        location: currentLine.location?.name || 'Chưa xác định',
+        locationDest: currentLine.locationDest?.name || 'Chưa xác định',
+      };
+
+      const newRecord = {
+        qty: parsedQty,
+        lot: selectedLot ? selectedLot.name : (values.lotId ? String(values.lotId) : '(Không có)'),
+        location: selectedLoc ? selectedLoc.name : (values.locationId ? String(values.locationId) : 'Chưa xác định'),
+        locationDest: currentLine.locationDest?.name || 'Chưa xác định',
+      };
+
+      // Case 1: ONLY images were added (no inventory fields changed)
+      if (!locationChanged && !lotChanged && !qtyChanged && hasNewImages) {
+        setIsDrawerOpen(false);
+        setEditingLine(null);
+        form.resetFields();
+        setSelectedImages([]);
+        message.success('Đã cập nhật hình ảnh');
+
+        queueBackgroundUpload({
+          pickingId: currentPickingId,
+          lineId: currentLine.id,
+          productName,
+          oldRecord,
+          newRecord,
+          uom,
+          images: imagesToUpload,
+          actionType: 'images_only',
+        });
+        return;
       }
 
+      // Case 2: Move line fields changed (with or without images)
+      // Lưu số lượng ngay lập tức - không chờ upload ảnh
       setSubmitting(true);
-      const updated = await pickingService.updateMoveLine(editingLine.id, {
+      const updated = await pickingService.updateMoveLine(currentLine.id, {
         locationId: values.locationId,
         lotId: values.lotId,
         qtyDone: parsedQty,
-        imageUrls,
+        skipChatter: hasNewImages,
       });
 
       message.success('Đã cập nhật dòng soạn hàng');
@@ -338,12 +360,25 @@ const MoveLines: React.FC = () => {
       setEditingLine(null);
       form.resetFields();
       setSelectedImages([]);
-      setUploadStatus('');
 
       // Update state locally & reload
       setMoveLines((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
       if (pickingId) clearMovesCache(pickingId);
       loadData();
+
+      // Nếu có chọn ảnh: Xử lý upload Dropbox & tạo log ghi chat trong nền tách biệt
+      if (hasNewImages) {
+        queueBackgroundUpload({
+          pickingId: currentPickingId,
+          lineId: currentLine.id,
+          productName,
+          oldRecord,
+          newRecord,
+          uom,
+          images: imagesToUpload,
+          actionType: 'update',
+        });
+      }
     } catch (err: any) {
       if (err?.errorFields) {
         // Form validation error
@@ -701,12 +736,11 @@ const MoveLines: React.FC = () => {
         placement="bottom"
         open={isDrawerOpen}
         onClose={() => {
-          if (!submitting && !uploadingImages) {
+          if (!submitting) {
             setIsDrawerOpen(false);
             setEditingLine(null);
             form.resetFields();
             setSelectedImages([]);
-            setUploadStatus('');
           }
         }}
         height="auto"
@@ -873,7 +907,7 @@ const MoveLines: React.FC = () => {
               <Button
                 icon={<CameraOutlined />}
                 onClick={() => fileInputCameraRef.current?.click()}
-                disabled={submitting || uploadingImages}
+                disabled={submitting}
                 style={{ flex: 1, height: 42, borderRadius: 6, fontWeight: 500 }}
               >
                 Chụp ảnh
@@ -881,7 +915,7 @@ const MoveLines: React.FC = () => {
               <Button
                 icon={<PictureOutlined />}
                 onClick={() => fileInputGalleryRef.current?.click()}
-                disabled={submitting || uploadingImages}
+                disabled={submitting}
                 style={{ flex: 1, height: 42, borderRadius: 6, fontWeight: 500 }}
               >
                 Chọn từ thư viện
@@ -953,12 +987,6 @@ const MoveLines: React.FC = () => {
                 </Image.PreviewGroup>
               </div>
             )}
-
-            {uploadStatus && (
-              <div style={{ marginTop: 8, fontSize: 13, color: '#0f4c81', fontWeight: 500 }}>
-                {uploadStatus}
-              </div>
-            )}
           </div>
 
           {/* Drawer Actions */}
@@ -971,9 +999,8 @@ const MoveLines: React.FC = () => {
                 setEditingLine(null);
                 form.resetFields();
                 setSelectedImages([]);
-                setUploadStatus('');
               }}
-              disabled={submitting || uploadingImages}
+              disabled={submitting}
               style={{ height: 48, borderRadius: 8 }}
             >
               Hủy
@@ -983,7 +1010,7 @@ const MoveLines: React.FC = () => {
               htmlType="submit"
               size="large"
               block
-              loading={submitting || uploadingImages}
+              loading={submitting}
               style={{
                 height: 48,
                 borderRadius: 8,
@@ -991,7 +1018,7 @@ const MoveLines: React.FC = () => {
                 fontWeight: 600,
               }}
             >
-              {uploadingImages ? 'Đang tải ảnh...' : 'Xác nhận'}
+              Xác nhận
             </Button>
           </div>
         </Form>

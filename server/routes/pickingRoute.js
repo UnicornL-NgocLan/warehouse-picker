@@ -9,6 +9,7 @@ router.get("/get-picking-moves/:id", authenticateUser, pickingCtrl.getPickingMov
 router.get("/get-move-lines/:id", authenticateUser, pickingCtrl.getMoveLines);
 router.post("/create-move-line/:moveId", authenticateUser, pickingCtrl.createMoveLine);
 router.patch("/update-move-line/:id", authenticateUser, pickingCtrl.updateMoveLine);
+router.post("/log-move-line-chatter", authenticateUser, pickingCtrl.logMoveLineChatter);
 router.delete("/delete-move-line/:id", authenticateUser, pickingCtrl.deleteMoveLine);
 router.get("/get-locations", authenticateUser, pickingCtrl.getLocations);
 router.get("/get-lots", authenticateUser, pickingCtrl.getLots);

@@ -9,6 +9,7 @@ import {
   createMoveLine,
   updateMoveLine,
   deleteMoveLine,
+  logMoveLineChatter,
 } from "../utils/updateOdooUserData.js";
 
 const parsePositiveInt = (val) => {
@@ -154,6 +155,10 @@ export const pickingCtrl = {
         updateData.imageUrls = imageUrls.filter((u) => typeof u === "string" && u.trim().length > 0);
       }
 
+      if (req.body.skipChatter !== undefined) {
+        updateData.skipChatter = Boolean(req.body.skipChatter);
+      }
+
       if (Object.keys(updateData).length === 0) {
         return res.status(400).json({ msg: "Không có thông tin nào để cập nhật" });
       }
@@ -211,6 +216,50 @@ export const pickingCtrl = {
     } catch (error) {
       console.error("Error in getLots:", error.message || error);
       return res.status(500).json({ msg: error.message || "Không thể lấy danh sách số lô" });
+    }
+  },
+
+  logMoveLineChatter: async (req, res) => {
+    try {
+      const {
+        pickingId,
+        lineId,
+        productName,
+        oldRecord,
+        newRecord,
+        uom,
+        imageUrls,
+        actionType,
+      } = req.body;
+
+      const parsedPickingId = parsePositiveInt(pickingId);
+      if (!parsedPickingId) {
+        return res.status(400).json({ msg: "Thiếu thông tin phiếu kho (pickingId)" });
+      }
+
+      // Trả về HTTP 200 ngay lập tức để không block client
+      res.status(200).json({ data: true, msg: "Đã tiếp nhận yêu cầu ghi log chatter" });
+
+      // Xử lý background ghi log chatter Odoo
+      setImmediate(async () => {
+        try {
+          await logMoveLineChatter(req.odoo, {
+            pickingId: parsedPickingId,
+            lineId: parsePositiveInt(lineId),
+            productName,
+            oldRecord,
+            newRecord,
+            uom,
+            imageUrls,
+            actionType,
+          });
+        } catch (err) {
+          console.error("Error in background logMoveLineChatter:", err?.message || err);
+        }
+      });
+    } catch (error) {
+      console.error("Error in logMoveLineChatter controller:", error.message || error);
+      return res.status(500).json({ msg: error.message || "Không thể ghi log chatter" });
     }
   },
 };

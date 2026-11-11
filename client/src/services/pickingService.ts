@@ -5,6 +5,7 @@ import {
   MoveLine,
   Ref,
   UpdateMoveLinePayload,
+  LogChatterPayload,
 } from "../interface/picking";
 
 export const pickingService = {
@@ -36,6 +37,11 @@ export const pickingService = {
 
   deleteMoveLine: async (lineId: number): Promise<boolean> => {
     const response = await app.delete(`/api/delete-move-line/${lineId}`);
+    return response.data.data;
+  },
+
+  logMoveLineChatter: async (data: LogChatterPayload): Promise<boolean> => {
+    const response = await app.post('/api/log-move-line-chatter', data);
     return response.data.data;
   },
 
