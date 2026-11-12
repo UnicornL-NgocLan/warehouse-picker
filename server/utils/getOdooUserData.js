@@ -665,10 +665,7 @@ export async function getPickingMoves(odoo, pickingId) {
         const moveIds = moves.map((m) => m.id);
         const productIds = Array.from(new Set(moves.map((m) => m.product_id[0])));
 
-        // Filter products not yet in cache
-        const uncachedProductIds = productIds.filter((pId) => !productCustomUomCache.has(pId));
-
-        // Fetch stock.move.line và uncached product.product SONG SONG
+        // Fetch stock.move.line và product.product (barcode + UoM nếu chưa cache) SONG SONG
         const [moveLines, productRecs] = await Promise.all([
           moveIds.length > 0
             ? new Promise((resML) => {
@@ -684,13 +681,13 @@ export async function getPickingMoves(odoo, pickingId) {
               })
             : Promise.resolve([]),
 
-          uncachedProductIds.length > 0
+          productIds.length > 0
             ? new Promise((resP) => {
                 const pParams = [
-                  [["id", "in", uncachedProductIds]],
-                  ["id", "name", "uom_id", "sea_unit_of_measure"],
+                  [["id", "in", productIds]],
+                  ["id", "barcode", "uom_id", "sea_unit_of_measure"],
                   0,
-                  uncachedProductIds.length,
+                  productIds.length,
                 ];
                 odoo.execute_kw("product.product", "search_read", [pParams], (pErr, pData) => {
                   resP(pData || []);
@@ -709,11 +706,15 @@ export async function getPickingMoves(odoo, pickingId) {
           pickedPackageQtyMap[mId] = (pickedPackageQtyMap[mId] || 0) + (Number(ml.package_qty) || 0);
         });
 
-        // Resolve UoM categories for any newly fetched products
+        // Map barcode và resolve UoM categories cho sản phẩm chưa cache
+        const productBarcodeMap = new Map();
         if (productRecs && productRecs.length > 0) {
           const uomIdsToFetch = [];
           productRecs.forEach((p) => {
-            if (p.uom_id && Array.isArray(p.uom_id)) {
+            const rawBarcode = typeof p.barcode === "string" ? p.barcode.trim() : "";
+            productBarcodeMap.set(p.id, rawBarcode || null);
+
+            if (!productCustomUomCache.has(p.id) && p.uom_id && Array.isArray(p.uom_id)) {
               const uId = p.uom_id[0];
               if (!uomCategoryCache.has(uId)) {
                 uomIdsToFetch.push(uId);
@@ -743,14 +744,16 @@ export async function getPickingMoves(odoo, pickingId) {
           }
 
           productRecs.forEach((p) => {
-            const uId = p.uom_id && Array.isArray(p.uom_id) ? p.uom_id[0] : null;
-            const uName = p.uom_id && Array.isArray(p.uom_id) ? String(p.uom_id[1]).toLowerCase() : "";
-            const isUnitCat = (uId && uomCategoryCache.get(uId)) || uName.includes("unit");
-            let effectiveCustomUom = null;
-            if (isUnitCat && p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)) {
-              effectiveCustomUom = p.sea_unit_of_measure[1];
+            if (!productCustomUomCache.has(p.id)) {
+              const uId = p.uom_id && Array.isArray(p.uom_id) ? p.uom_id[0] : null;
+              const uName = p.uom_id && Array.isArray(p.uom_id) ? String(p.uom_id[1]).toLowerCase() : "";
+              const isUnitCat = (uId && uomCategoryCache.get(uId)) || uName.includes("unit");
+              let effectiveCustomUom = null;
+              if (isUnitCat && p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)) {
+                effectiveCustomUom = p.sea_unit_of_measure[1];
+              }
+              productCustomUomCache.set(p.id, effectiveCustomUom);
             }
-            productCustomUomCache.set(p.id, effectiveCustomUom);
           });
         }
 
@@ -797,6 +800,7 @@ export async function getPickingMoves(odoo, pickingId) {
             product: {
               id: m.product_id[0],
               name: m.product_id[1],
+              barcode: productBarcodeMap.get(m.product_id[0]) || null,
             },
             orderedQty: Number(orderedQty) || 0,
             orderedUom,
@@ -986,15 +990,15 @@ export async function getLocations(odoo, query, limit = 50) {
 
     let domain;
     if (query && query.trim()) {
-      // Có từ khóa tìm kiếm: lọc internal + tên khớp
+      // Có từ khóa tìm kiếm: lọc địa điểm khả dụng (không phải view) + tên khớp
       domain = [
-        ["usage", "=", "internal"],
+        ["usage", "!=", "view"],
         ["complete_name", "ilike", query.trim()],
       ];
     } else {
-      // Không có từ khóa: lấy internal HOẶC ID 288 (địa điểm mặc định)
+      // Không có từ khóa: lấy địa điểm khả dụng HOẶC ID 288 (địa điểm mặc định)
       // Dùng OR domain để lấy trong 1 round-trip thay vì 2
-      domain = ["|", ["id", "=", 288], ["usage", "=", "internal"]];
+      domain = ["|", ["id", "=", 288], ["usage", "!=", "view"]];
     }
 
     const params = [[domain, ["id", "complete_name", "name"], 0, maxLimit, "complete_name asc"]];

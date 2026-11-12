@@ -1,12 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Card, Progress, Tag, Typography, Button, Empty, Skeleton, message, Alert } from 'antd';
+import { Card, Progress, Tag, Typography, Button, Empty, Skeleton, message, Alert, Modal } from 'antd';
+import { BarcodeOutlined } from '@ant-design/icons';
 import Header from 'widgets/Header';
 import { pickingService } from 'services/pickingService';
 import { Move, Picking } from 'interface/picking';
 import { formatQty } from 'helpers/formatNumber';
 import { getErrorMessage } from 'helpers/getErrorMessage';
 import { myColor } from 'color';
+import BarcodeScannerModal from './BarcodeScannerModal';
 
 const { Text } = Typography;
 
@@ -30,6 +32,7 @@ const PickingMoves: React.FC = () => {
   const [moves, setMoves] = useState<Move[]>(cachedMoves || []);
   const [loading, setLoading] = useState<boolean>(!cachedMoves);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState<boolean>(false);
 
   const passedPicking = (location.state as any)?.picking as Picking | undefined;
   const pickingTitle = passedPicking?.name || `Phiếu #${pickingId}`;
@@ -61,6 +64,38 @@ const PickingMoves: React.FC = () => {
     // Luôn tải lại dữ liệu mới nhất khi mở lại màn hình
     loadMoves(!movesCache[pickingId || '']);
   }, [loadMoves, pickingId]);
+
+  const handleScanBarcode = useCallback(
+    (rawCode: string) => {
+      const code = rawCode ? rawCode.trim() : '';
+      setScannerOpen(false);
+      if (!code) return;
+
+      const matchedMove = moves.find(
+        (m) => m.product?.barcode && m.product.barcode.trim().toLowerCase() === code.toLowerCase()
+      );
+
+      if (!matchedMove) {
+        Modal.warning({
+          title: 'Không tìm thấy sản phẩm',
+          content: `Không tìm thấy sản phẩm có barcode "${code}" trong phiếu.`,
+          okText: 'Đóng',
+          centered: true,
+        });
+        return;
+      }
+
+      navigate(`/pickings/${pickingId}/moves/${matchedMove.id}`, {
+        state: {
+          move: matchedMove,
+          pickingTitle,
+          pickingState: passedPicking?.state || matchedMove.state,
+          autoCreateIfEmpty: true,
+        },
+      });
+    },
+    [moves, navigate, pickingId, pickingTitle, passedPicking?.state]
+  );
 
   const getProgressStatus = (ordered: number, picked: number) => {
     if (picked === 0) {
@@ -109,10 +144,23 @@ const PickingMoves: React.FC = () => {
           flex: 1,
         }}
       >
-        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>
             Danh sách sản phẩm cần soạn ({moves.length})
           </span>
+          <Button
+            type="primary"
+            icon={<BarcodeOutlined />}
+            onClick={() => setScannerOpen(true)}
+            disabled={loading && moves.length === 0}
+            style={{
+              backgroundColor: myColor.buttonColor,
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+          >
+            Quét barcode
+          </Button>
         </div>
 
         {errorMsg && (
@@ -258,6 +306,12 @@ const PickingMoves: React.FC = () => {
           })
         )}
       </div>
+
+      <BarcodeScannerModal
+        open={scannerOpen}
+        onCancel={() => setScannerOpen(false)}
+        onScan={handleScanBarcode}
+      />
     </div>
   );
 };

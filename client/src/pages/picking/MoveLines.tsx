@@ -42,6 +42,7 @@ const MoveLines: React.FC = () => {
   const passedMove = (location.state as any)?.move as Move | undefined;
   const pickingTitle = (location.state as any)?.pickingTitle as string | undefined;
   const passedPickingState = (location.state as any)?.pickingState as string | undefined;
+  const autoCreateIfEmpty = Boolean((location.state as any)?.autoCreateIfEmpty);
 
   const [currentMove, setCurrentMove] = useState<Move | null>(passedMove || null);
   const [moveLines, setMoveLines] = useState<MoveLine[]>([]);
@@ -66,6 +67,10 @@ const MoveLines: React.FC = () => {
   const [locationOptions, setLocationOptions] = useState<Ref[]>([]);
   const [fetchingLocations, setFetchingLocations] = useState<boolean>(false);
 
+  // Destination Location search state
+  const [locationDestOptions, setLocationDestOptions] = useState<Ref[]>([]);
+  const [fetchingLocationDests, setFetchingLocationDests] = useState<boolean>(false);
+
   // Lot search state
   const [lotOptions, setLotOptions] = useState<Ref[]>([]);
   const [fetchingLots, setFetchingLots] = useState<boolean>(false);
@@ -78,6 +83,8 @@ const MoveLines: React.FC = () => {
   const [form] = Form.useForm();
   const listEndRef = useRef<HTMLDivElement>(null);
   const isFetchingRef = useRef<boolean>(false);
+  const hasLoadedOnceRef = useRef<boolean>(false);
+  const hasAutoCreatedRef = useRef<boolean>(false);
 
   // Calculate total picked from lines
   const totalPicked = useMemo(() => {
@@ -94,6 +101,7 @@ const MoveLines: React.FC = () => {
 
       const numMoveId = parseInt(moveId, 10);
       const lines = await pickingService.getMoveLines(numMoveId);
+      hasLoadedOnceRef.current = true;
       setMoveLines(lines || []);
 
       // Chỉ fetch lại parent move nếu chưa có thông tin (trường hợp user F5 trực tiếp trang này)
@@ -147,6 +155,31 @@ const MoveLines: React.FC = () => {
     [form]
   );
 
+  // Debounced destination location search
+  const searchLocationDests = useMemo(
+    () =>
+      debounce(async (searchQuery: string) => {
+        setFetchingLocationDests(true);
+        try {
+          const locs = await pickingService.getLocations(searchQuery);
+          setLocationDestOptions((prev) => {
+            const newLocs = locs || [];
+            const selectedId = form.getFieldValue('locationDestId');
+            const currentSelected = prev.find((l) => l.id === selectedId);
+            if (currentSelected && !newLocs.some((l) => l.id === currentSelected.id)) {
+              return [currentSelected, ...newLocs];
+            }
+            return newLocs;
+          });
+        } catch {
+          // ignore search error
+        } finally {
+          setFetchingLocationDests(false);
+        }
+      }, 300),
+    [form]
+  );
+
   // Debounced lot search
   const searchLots = useMemo(
     () =>
@@ -192,6 +225,14 @@ const MoveLines: React.FC = () => {
       setLocationOptions(initialLocs);
       searchLocations('');
 
+      // Prepopulate options with current line's destination location
+      const initialDestLocs: Ref[] = [];
+      if (line.locationDest && line.locationDest.id) {
+        initialDestLocs.push(line.locationDest);
+      }
+      setLocationDestOptions(initialDestLocs);
+      searchLocationDests('');
+
       if (line.tracking !== 'none') {
         const initialLots: Ref[] = [];
         if (line.lot && line.lot.id) {
@@ -202,7 +243,7 @@ const MoveLines: React.FC = () => {
       }
 
       form.setFieldsValue({
-        locationDest: line.locationDest?.name || 'Không xác định',
+        locationDestId: line.locationDest?.id || undefined,
         locationId: targetLocationId,
         lotId: line.lot?.id || null,
         qtyDone: line.qtyDone ? String(line.qtyDone) : '0',
@@ -210,7 +251,7 @@ const MoveLines: React.FC = () => {
 
       setIsDrawerOpen(true);
     },
-    [form, isReadOnly, locationOptions, searchLocations, searchLots]
+    [form, isReadOnly, locationOptions, searchLocations, searchLocationDests, searchLots]
   );
 
   // Handle image files selection from Camera or Gallery
@@ -238,7 +279,7 @@ const MoveLines: React.FC = () => {
   };
 
   // Handle Create Move Line
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     if (!moveId || creating || isReadOnly) return;
     try {
       setCreating(true);
@@ -265,7 +306,24 @@ const MoveLines: React.FC = () => {
     } finally {
       setCreating(false);
     }
-  };
+  }, [moveId, creating, isReadOnly, pickingId, handleOpenEdit, loadData]);
+
+  // Nếu được mở từ quét barcode và sản phẩm chưa có dòng soạn hàng nào -> tự động tạo dòng mới
+  useEffect(() => {
+    if (
+      autoCreateIfEmpty &&
+      hasLoadedOnceRef.current &&
+      !hasAutoCreatedRef.current &&
+      !loading &&
+      !creating &&
+      !errorMsg &&
+      !isReadOnly &&
+      moveLines.length === 0
+    ) {
+      hasAutoCreatedRef.current = true;
+      handleCreate();
+    }
+  }, [autoCreateIfEmpty, loading, creating, errorMsg, isReadOnly, moveLines.length, handleCreate]);
 
   // Handle Save (Submit Drawer)
   const handleSave = async () => {
@@ -288,11 +346,12 @@ const MoveLines: React.FC = () => {
 
       // Check if values actually changed
       const locationChanged = editingLine.location?.id !== values.locationId;
+      const locationDestChanged = (editingLine.locationDest?.id || null) !== (values.locationDestId || null);
       const lotChanged = (editingLine.lot?.id || null) !== (values.lotId || null);
       const qtyChanged = Number(editingLine.qtyDone) !== parsedQty;
       const hasNewImages = selectedImages.length > 0;
 
-      if (!locationChanged && !lotChanged && !qtyChanged && !hasNewImages) {
+      if (!locationChanged && !locationDestChanged && !lotChanged && !qtyChanged && !hasNewImages) {
         // Nothing changed, close drawer
         setIsDrawerOpen(false);
         setEditingLine(null);
@@ -308,6 +367,7 @@ const MoveLines: React.FC = () => {
       const uom = currentLine.uom || currentMove?.pickedUom || currentMove?.orderedUom || '';
 
       const selectedLoc = locationOptions.find((l) => l.id === values.locationId);
+      const selectedLocDest = locationDestOptions.find((l) => l.id === values.locationDestId);
       const selectedLot = lotOptions.find((l) => l.id === values.lotId);
 
       const oldRecord = {
@@ -321,11 +381,15 @@ const MoveLines: React.FC = () => {
         qty: parsedQty,
         lot: selectedLot ? selectedLot.name : (values.lotId ? String(values.lotId) : '(Không có)'),
         location: selectedLoc ? selectedLoc.name : (values.locationId ? String(values.locationId) : 'Chưa xác định'),
-        locationDest: currentLine.locationDest?.name || 'Chưa xác định',
+        locationDest: selectedLocDest
+          ? selectedLocDest.name
+          : values.locationDestId
+          ? String(values.locationDestId)
+          : currentLine.locationDest?.name || 'Chưa xác định',
       };
 
       // Case 1: ONLY images were added (no inventory fields changed)
-      if (!locationChanged && !lotChanged && !qtyChanged && hasNewImages) {
+      if (!locationChanged && !locationDestChanged && !lotChanged && !qtyChanged && hasNewImages) {
         setIsDrawerOpen(false);
         setEditingLine(null);
         form.resetFields();
@@ -350,6 +414,7 @@ const MoveLines: React.FC = () => {
       setSubmitting(true);
       const updated = await pickingService.updateMoveLine(currentLine.id, {
         locationId: values.locationId,
+        locationDestId: values.locationDestId,
         lotId: values.lotId,
         qtyDone: parsedQty,
         skipChatter: hasNewImages,
@@ -762,12 +827,24 @@ const MoveLines: React.FC = () => {
         )}
 
         <Form form={form} layout="vertical" onFinish={handleSave}>
-          {/* Read-only Destination Location */}
+          {/* Destination Location */}
           <Form.Item
-            label={<span style={{ fontWeight: 600 }}>Địa điểm đích (chỉ đọc)</span>}
-            name="locationDest"
+            label={<span style={{ fontWeight: 600 }}>Địa điểm đích</span>}
+            name="locationDestId"
+            rules={[{ required: true, message: 'Vui lòng chọn địa điểm đích' }]}
           >
-            <Input disabled size="large" style={{ backgroundColor: '#f5f5f5', color: '#666' }} />
+            <Select
+              showSearch
+              size="large"
+              placeholder="Tìm kiếm địa điểm đích..."
+              loading={fetchingLocationDests}
+              filterOption={false}
+              onSearch={searchLocationDests}
+              options={locationDestOptions.map((loc) => ({
+                label: formatLocationName(loc.name),
+                value: loc.id,
+              }))}
+            />
           </Form.Item>
 
           {/* Source Location */}

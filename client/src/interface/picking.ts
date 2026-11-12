@@ -11,9 +11,13 @@ export type Picking = {
   hasReserved?: boolean;
 };
 
+export type ProductRef = Ref & {
+  barcode?: string | null;
+};
+
 export type Move = {
   id: number;
-  product: Ref;
+  product: ProductRef;
   orderedQty: number;
   orderedUom: string;
   orderedFromPicking?: boolean;
@@ -44,6 +48,7 @@ export type MoveLine = {
 
 export type UpdateMoveLinePayload = {
   locationId?: number;
+  locationDestId?: number;
   lotId?: number | null;
   qtyDone?: number | string;
   imageUrls?: string[];

@@ -490,6 +490,9 @@ export async function updateMoveLine(odoo, lineId, data) {
     if (data.locationId !== undefined) {
       vals.location_id = parseInt(data.locationId, 10);
     }
+    if (data.locationDestId !== undefined) {
+      vals.location_dest_id = parseInt(data.locationDestId, 10);
+    }
     if (data.lotId !== undefined) {
       vals.lot_id = data.lotId ? parseInt(data.lotId, 10) : false;
     }

@@ -206,7 +206,7 @@ const PickingList: React.FC = () => {
       }}
     >
       <Header
-        title="Danh sách phiếu kho"
+        title="Phiếu kho"
         handleChangeCompany={handleChangeCompany}
         onRefresh={handleRefresh}
         isRefreshing={loading}

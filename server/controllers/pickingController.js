@@ -116,7 +116,7 @@ export const pickingCtrl = {
         return res.status(400).json({ msg: "Mã dòng soạn hàng không hợp lệ" });
       }
 
-      const { locationId, lotId, qtyDone, imageUrls } = req.body;
+      const { locationId, locationDestId, lotId, qtyDone, imageUrls } = req.body;
       const updateData = {};
 
       if (locationId !== undefined) {
@@ -125,6 +125,14 @@ export const pickingCtrl = {
           return res.status(400).json({ msg: "Địa điểm nguồn không hợp lệ" });
         }
         updateData.locationId = locNum;
+      }
+
+      if (locationDestId !== undefined) {
+        const locDestNum = parsePositiveInt(locationDestId);
+        if (!locDestNum) {
+          return res.status(400).json({ msg: "Địa điểm đích không hợp lệ" });
+        }
+        updateData.locationDestId = locDestNum;
       }
 
       if (lotId !== undefined) {
