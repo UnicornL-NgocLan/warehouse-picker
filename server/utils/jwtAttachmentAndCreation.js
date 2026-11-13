@@ -8,7 +8,7 @@ export const createJWT = ({ payload }) => {
     expiresIn: TOKEN_EXPIRY,
   });
   return token;
-};
+}; 
 
 export const attachCookiesToResponse = ({ res, data }) => {
   const accessTokenJWT = createJWT({ payload: data });
@@ -17,6 +17,7 @@ export const attachCookiesToResponse = ({ res, data }) => {
     httpOnly: true,
     maxAge: COOKIE_MAX_AGE,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "none",
+    sign: true,
+    // sameSite: "none",
   });
 };
