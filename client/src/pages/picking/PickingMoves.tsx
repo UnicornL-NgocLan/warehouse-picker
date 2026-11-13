@@ -49,6 +49,9 @@ const PickingMoves: React.FC = () => {
         const freshMoves = data || [];
         movesCache[pickingId] = freshMoves;
         setMoves(freshMoves);
+        if ((freshMoves as any).autoCreatedLines) {
+          message.success('Đã tự động tạo 1 dòng soạn hàng cho các sản phẩm');
+        }
       } catch (err) {
         const msg = getErrorMessage(err);
         setErrorMsg(msg);

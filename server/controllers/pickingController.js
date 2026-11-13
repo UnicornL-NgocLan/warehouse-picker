@@ -4,6 +4,9 @@ import {
   getMoveLines,
   getLocations,
   getLots,
+  searchStorableProducts,
+  getProductStockSummary,
+  getProductStockReport,
 } from "../utils/getOdooUserData.js";
 import {
   createMoveLine,
@@ -71,7 +74,13 @@ export const pickingCtrl = {
       }
 
       const moves = await getPickingMovesCached(req.odoo, pickingId);
-      return res.status(200).json({ data: moves });
+      if (moves && moves.autoCreatedLines) {
+        invalidatePickingMovesCache(pickingId);
+      }
+      return res.status(200).json({
+        data: moves,
+        autoCreatedLines: Boolean(moves && moves.autoCreatedLines),
+      });
     } catch (error) {
       console.error("Error in getPickingMoves:", error.message || error);
       return res.status(500).json({ msg: error.message || "Không thể lấy danh sách sản phẩm trong phiếu" });
@@ -268,6 +277,62 @@ export const pickingCtrl = {
     } catch (error) {
       console.error("Error in logMoveLineChatter controller:", error.message || error);
       return res.status(500).json({ msg: error.message || "Không thể ghi log chatter" });
+    }
+  },
+
+  searchStorableProducts: async (req, res) => {
+    try {
+      const q = req.query.search || req.query.q || "";
+      const limit = parseInt(req.query.limit, 10) || 20;
+      const data = await searchStorableProducts(req.odoo, q, limit);
+      return res.status(200).json({ data });
+    } catch (error) {
+      console.error("Error in searchStorableProducts controller:", error.message || error);
+      return res.status(500).json({ msg: error.message || "Không thể tìm kiếm sản phẩm" });
+    }
+  },
+
+  getProductStockSummary: async (req, res) => {
+    try {
+      const productId = parsePositiveInt(req.params.productId);
+      if (!productId) {
+        return res.status(400).json({ msg: "Thiếu mã sản phẩm (productId)" });
+      }
+
+      let companyId = parsePositiveInt(req.query.companyId);
+      if (!companyId && req.user && req.user[0] && req.user[0].company_id) {
+        companyId = Array.isArray(req.user[0].company_id)
+          ? req.user[0].company_id[0]
+          : req.user[0].company_id;
+      }
+
+      const data = await getProductStockSummary(req.odoo, productId, companyId);
+      return res.status(200).json({ data });
+    } catch (error) {
+      console.error("Error in getProductStockSummary controller:", error.message || error);
+      return res.status(500).json({ msg: error.message || "Không thể lấy tổng tồn kho" });
+    }
+  },
+
+  getProductStockReport: async (req, res) => {
+    try {
+      const productId = parsePositiveInt(req.params.productId);
+      if (!productId) {
+        return res.status(400).json({ msg: "Thiếu mã sản phẩm (productId)" });
+      }
+
+      let companyId = parsePositiveInt(req.query.companyId);
+      if (!companyId && req.user && req.user[0] && req.user[0].company_id) {
+        companyId = Array.isArray(req.user[0].company_id)
+          ? req.user[0].company_id[0]
+          : req.user[0].company_id;
+      }
+
+      const data = await getProductStockReport(req.odoo, productId, companyId);
+      return res.status(200).json({ data });
+    } catch (error) {
+      console.error("Error in getProductStockReport controller:", error.message || error);
+      return res.status(500).json({ msg: error.message || "Không thể lấy báo cáo tồn kho" });
     }
   },
 };

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Button, Empty, message, Alert, Input } from 'antd';
+import { Table, Button, Empty, message, Alert, Input, FloatButton } from 'antd';
+import { FileSearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useDispatch, useSelector } from 'react-redux';
 import Header from 'widgets/Header';
@@ -8,6 +9,7 @@ import { pickingService } from 'services/pickingService';
 import { Picking } from 'interface/picking';
 import { getErrorMessage } from 'helpers/getErrorMessage';
 import { myColor } from 'color';
+import StockReportModal from './StockReportModal';
 import { RootState } from '../../redux/store';
 import { addAuth } from '../../redux/reducers/authReducer';
 import { getCompanies } from '../../redux/reducers/companyReducer';
@@ -32,6 +34,7 @@ const PickingList: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [stockReportOpen, setStockReportOpen] = useState<boolean>(false);
 
   const fetchCompanies = useCallback(async () => {
     try {
@@ -311,6 +314,26 @@ const PickingList: React.FC = () => {
             </Button>
           </div>
         )}
+
+        {/* FloatButton mở báo cáo tồn kho sản phẩm */}
+        <FloatButton
+          icon={<FileSearchOutlined style={{ fontSize: 20 }} />}
+          type="primary"
+          tooltip="Báo cáo tồn kho sản phẩm"
+          style={{
+            right: 24,
+            bottom: 28,
+            width: 48,
+            height: 48,
+          }}
+          onClick={() => setStockReportOpen(true)}
+        />
+
+        {/* Modal báo cáo tồn kho & drilldown */}
+        <StockReportModal
+          open={stockReportOpen}
+          onCancel={() => setStockReportOpen(false)}
+        />
       </div>
     </div>
   );

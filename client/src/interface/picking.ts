@@ -81,3 +81,56 @@ export type GetPickingsResponse = {
   hasMore: boolean;
 };
 
+export type StorableProduct = {
+  id: number;
+  name: string;
+  barcode?: string | null;
+  default_code?: string | null;
+  uom?: string | null;
+  uom_id?: [number, string] | null;
+  tracking?: string;
+};
+
+export type StockReportChild = {
+  key: string;
+  name: string;
+  locationId?: number;
+  locationName?: string;
+  lotId?: number;
+  lotName?: string;
+  quantity: number;
+  reservedQuantity?: number;
+  availableQuantity?: number;
+};
+
+export type StockReportGroup = {
+  key: string;
+  name?: string;
+  lotId?: number;
+  lotName?: string;
+  locationId?: number;
+  locationName?: string;
+  quantity: number;
+  reservedQuantity?: number;
+  availableQuantity?: number;
+  children: StockReportChild[];
+};
+
+export type ProductStockReport = {
+  product: {
+    id: number;
+    name: string;
+    barcode?: string | null;
+    default_code?: string | null;
+    uom: string;
+    tracking?: string;
+  };
+  companyId: number;
+  totalQuantity: number;
+  totalReserved?: number;
+  totalAvailable?: number;
+  byLot: StockReportGroup[];
+  byLocation: StockReportGroup[];
+};
+
+

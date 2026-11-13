@@ -13,6 +13,9 @@ router.post("/log-move-line-chatter", authenticateUser, pickingCtrl.logMoveLineC
 router.delete("/delete-move-line/:id", authenticateUser, pickingCtrl.deleteMoveLine);
 router.get("/get-locations", authenticateUser, pickingCtrl.getLocations);
 router.get("/get-lots", authenticateUser, pickingCtrl.getLots);
+router.get("/search-storable-products", authenticateUser, pickingCtrl.searchStorableProducts);
+router.get("/product-stock-summary/:productId", authenticateUser, pickingCtrl.getProductStockSummary);
+router.get("/product-stock-report/:productId", authenticateUser, pickingCtrl.getProductStockReport);
 
 export default router.stack;
 

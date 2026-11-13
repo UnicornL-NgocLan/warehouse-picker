@@ -6,6 +6,8 @@ import {
   Ref,
   UpdateMoveLinePayload,
   LogChatterPayload,
+  StorableProduct,
+  ProductStockReport,
 } from "../interface/picking";
 
 export const pickingService = {
@@ -17,6 +19,9 @@ export const pickingService = {
 
   getPickingMoves: async (pickingId: number): Promise<Move[]> => {
     const response = await app.get(`/api/get-picking-moves/${pickingId}`);
+    if (response.data && response.data.autoCreatedLines && Array.isArray(response.data.data)) {
+      (response.data.data as any).autoCreatedLines = true;
+    }
     return response.data.data;
   },
 
@@ -52,6 +57,34 @@ export const pickingService = {
 
   getLots: async (productId: number, q: string = "", limit: number = 50): Promise<Ref[]> => {
     const response = await app.get(`/api/get-lots?product_id=${productId}&q=${encodeURIComponent(q)}&limit=${limit}`);
+    return response.data.data;
+  },
+
+  searchStorableProducts: async (q: string = "", limit: number = 20): Promise<StorableProduct[]> => {
+    const response = await app.get(`/api/search-storable-products?q=${encodeURIComponent(q)}&limit=${limit}`);
+    return response.data.data;
+  },
+
+  getProductStockSummary: async (productId: number, companyId?: number): Promise<{
+    product: {
+      id: number;
+      name: string;
+      barcode?: string | null;
+      default_code?: string | null;
+      uom: string;
+      tracking?: string;
+    };
+    companyId: number;
+    totalQuantity: number;
+  }> => {
+    const companyParam = companyId ? `?companyId=${companyId}` : "";
+    const response = await app.get(`/api/product-stock-summary/${productId}${companyParam}`);
+    return response.data.data;
+  },
+
+  getProductStockReport: async (productId: number, companyId?: number): Promise<ProductStockReport> => {
+    const companyParam = companyId ? `?companyId=${companyId}` : "";
+    const response = await app.get(`/api/product-stock-report/${productId}${companyParam}`);
     return response.data.data;
   },
 };

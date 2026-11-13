@@ -636,196 +636,282 @@ export function formatLocationName(rawName) {
 // In-memory caches to dramatically speed up stock move requests
 const uomCategoryCache = new Map();      // uomId    -> boolean (isUnitCat)
 const productCustomUomCache = new Map(); // productId -> string | null (customUom)
+const productBarcodeCache = new Map();   // productId -> string | null (barcode)
 const productTrackingCache = new Map();  // productId -> string (tracking: 'none'|'lot'|'serial')
 
 export async function getPickingMoves(odoo, pickingId) {
-  return new Promise((resolve, reject) => {
-    const inParams = [
-      [["picking_id", "=", parseInt(pickingId, 10)], ["state", "!=", "cancel"]],
-      [
-        "id",
-        "product_id",
-        "product_uom_qty",
-        "product_uom",
-        "reserved_availability",
-        "state",
-        "product_packaging",
-        "package_qty",
-        "package_qty_done",
-      ],
-      0,
-      1000,
-      "id asc",
-    ];
-    odoo.execute_kw("stock.move", "search_read", [inParams], async (err, moves) => {
-      if (err) return reject(err);
-      if (!moves || moves.length === 0) return resolve([]);
+  const numPickingId = parseInt(pickingId, 10);
 
-      try {
-        const moveIds = moves.map((m) => m.id);
-        const productIds = Array.from(new Set(moves.map((m) => m.product_id[0])));
+  const moveParams = [
+    [["picking_id", "=", numPickingId], ["state", "!=", "cancel"]],
+    [
+      "id",
+      "picking_id",
+      "product_id",
+      "product_uom_qty",
+      "product_uom",
+      "reserved_availability",
+      "state",
+      "location_id",
+      "location_dest_id",
+      "product_packaging",
+      "package_qty",
+      "package_qty_done",
+    ],
+    0,
+    1000,
+    "id asc",
+  ];
 
-        // Fetch stock.move.line và product.product (barcode + UoM nếu chưa cache) SONG SONG
-        const [moveLines, productRecs] = await Promise.all([
-          moveIds.length > 0
-            ? new Promise((resML) => {
-                const mlParams = [
-                  [["move_id", "in", moveIds]],
-                  ["id", "move_id", "qty_done", "product_uom_qty", "package_qty"],
-                  0,
-                  2000,
-                ];
-                odoo.execute_kw("stock.move.line", "search_read", [mlParams], (mlErr, mlRecs) => {
-                  resML(mlRecs || []);
-                });
-              })
-            : Promise.resolve([]),
+  const moveLineParams = [
+    [["picking_id", "=", numPickingId]],
+    ["id", "move_id", "qty_done", "product_uom_qty", "package_qty"],
+    0,
+    2000,
+  ];
 
-          productIds.length > 0
-            ? new Promise((resP) => {
-                const pParams = [
-                  [["id", "in", productIds]],
-                  ["id", "barcode", "uom_id", "sea_unit_of_measure"],
-                  0,
-                  productIds.length,
-                ];
-                odoo.execute_kw("product.product", "search_read", [pParams], (pErr, pData) => {
-                  resP(pData || []);
-                });
-              })
-            : Promise.resolve([]),
-        ]);
-
-        const pickedQtyMap = {};
-        const reservedQtyMap = {};
-        const pickedPackageQtyMap = {};
-        (moveLines || []).forEach((ml) => {
-          const mId = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-          pickedQtyMap[mId] = (pickedQtyMap[mId] || 0) + (Number(ml.qty_done) || 0);
-          reservedQtyMap[mId] = (reservedQtyMap[mId] || 0) + (Number(ml.product_uom_qty) || 0);
-          pickedPackageQtyMap[mId] = (pickedPackageQtyMap[mId] || 0) + (Number(ml.package_qty) || 0);
-        });
-
-        // Map barcode và resolve UoM categories cho sản phẩm chưa cache
-        const productBarcodeMap = new Map();
-        if (productRecs && productRecs.length > 0) {
-          const uomIdsToFetch = [];
-          productRecs.forEach((p) => {
-            const rawBarcode = typeof p.barcode === "string" ? p.barcode.trim() : "";
-            productBarcodeMap.set(p.id, rawBarcode || null);
-
-            if (!productCustomUomCache.has(p.id) && p.uom_id && Array.isArray(p.uom_id)) {
-              const uId = p.uom_id[0];
-              if (!uomCategoryCache.has(uId)) {
-                uomIdsToFetch.push(uId);
-              }
-            }
-          });
-
-          if (uomIdsToFetch.length > 0) {
-            try {
-              const uomRecs = await new Promise((resU) => {
-                odoo.execute_kw(
-                  "uom.uom",
-                  "search_read",
-                  [[[["id", "in", Array.from(new Set(uomIdsToFetch))]], ["id", "name", "category_id"], 0, uomIdsToFetch.length]],
-                  (uErr, uData) => resU(uData || [])
-                );
-              });
-              (uomRecs || []).forEach((u) => {
-                const catName = u.category_id && Array.isArray(u.category_id) ? String(u.category_id[1]).toLowerCase() : "";
-                const uName = u.name ? String(u.name).toLowerCase() : "";
-                const isUnit = catName.includes("unit") || uName.includes("unit");
-                uomCategoryCache.set(u.id, isUnit);
-              });
-            } catch {
-              // Ignore
-            }
-          }
-
-          productRecs.forEach((p) => {
-            if (!productCustomUomCache.has(p.id)) {
-              const uId = p.uom_id && Array.isArray(p.uom_id) ? p.uom_id[0] : null;
-              const uName = p.uom_id && Array.isArray(p.uom_id) ? String(p.uom_id[1]).toLowerCase() : "";
-              const isUnitCat = (uId && uomCategoryCache.get(uId)) || uName.includes("unit");
-              let effectiveCustomUom = null;
-              if (isUnitCat && p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)) {
-                effectiveCustomUom = p.sea_unit_of_measure[1];
-              }
-              productCustomUomCache.set(p.id, effectiveCustomUom);
-            }
-          });
+  // BƯỚC 1: Chạy SONG SONG cả stock.move và stock.move.line ngay từ đầu thay vì chạy tuần tự
+  const [moves, initialMoveLines] = await Promise.all([
+    new Promise((resM, rejM) => {
+      odoo.execute_kw("stock.move", "search_read", [moveParams], (err, res) => {
+        if (err) return rejM(err);
+        resM(res || []);
+      });
+    }),
+    new Promise((resML) => {
+      odoo.execute_kw("stock.move.line", "search_read", [moveLineParams], (err, res) => {
+        if (err) {
+          // Fallback nếu Odoo chưa đánh picking_id trực tiếp trên move line
+          return resML(null);
         }
+        resML(res || []);
+      });
+    }),
+  ]);
 
-        const result = moves.map((m) => {
-          const defaultUom = Array.isArray(m.product_uom) ? m.product_uom[1] : "";
-          const customUom = productCustomUomCache.get(m.product_id[0]);
+  if (!moves || moves.length === 0) return [];
 
+  try {
+    const moveIds = moves.map((m) => m.id);
+    const productIds = Array.from(new Set(moves.map((m) => m.product_id[0])));
+
+    // Lọc ra các sản phẩm chưa có trong cache RAM
+    const uncachedProductIds = productIds.filter(
+      (pId) => !productCustomUomCache.has(pId) || !productBarcodeCache.has(pId)
+    );
+
+    // BƯỚC 2: Nếu chưa lấy được moveLines thì fallback lấy theo moveIds, đồng thời đọc sản phẩm chưa cache SONG SONG
+    let [moveLines, productRecs] = await Promise.all([
+      initialMoveLines !== null
+        ? Promise.resolve(initialMoveLines)
+        : moveIds.length > 0
+        ? new Promise((resML) => {
+            const mlParams = [
+              [["move_id", "in", moveIds]],
+              ["id", "move_id", "qty_done", "product_uom_qty", "package_qty"],
+              0,
+              2000,
+            ];
+            odoo.execute_kw("stock.move.line", "search_read", [mlParams], (mlErr, mlRecs) => {
+              resML(mlRecs || []);
+            });
+          })
+        : Promise.resolve([]),
+
+      uncachedProductIds.length > 0
+        ? new Promise((resP) => {
+            const pParams = [
+              [["id", "in", uncachedProductIds]],
+              ["id", "barcode", "uom_id", "sea_unit_of_measure"],
+              0,
+              uncachedProductIds.length,
+            ];
+            odoo.execute_kw("product.product", "search_read", [pParams], (pErr, pData) => {
+              resP(pData || []);
+            });
+          })
+        : Promise.resolve([]),
+    ]);
+
+    let didAutoCreate = false;
+    // BƯỚC 3: Tối ưu kiểm tra trạng thái phiếu trực tiếp từ moves (bỏ truy vấn thừa sang stock.picking)
+    const isPickingActive = !moves.some((m) => m.state === "done" || m.state === "cancel");
+    if (moves.length > 0 && (!moveLines || moveLines.length === 0) && isPickingActive) {
+      // Ưu tiên dùng trực tiếp location_id của chính move để tránh lỗi retry địa điểm
+      await Promise.all(
+        moves.map((move) => {
           const hasPackaging = Boolean(
-            m.product_packaging &&
-              (Array.isArray(m.product_packaging) ? m.product_packaging[0] : m.product_packaging)
+            move.product_packaging &&
+              (Array.isArray(move.product_packaging) ? move.product_packaging[0] : move.product_packaging)
           );
-          const packagingName =
-            hasPackaging && Array.isArray(m.product_packaging) ? m.product_packaging[1] : null;
-
-          let orderedQty = 0;
-          let pickedQty = 0;
-          let orderedUom = "";
-          let pickedUom = "";
-
+          const moveLocId = Array.isArray(move.location_id) ? move.location_id[0] : move.location_id;
+          const createVals = {
+            picking_id: numPickingId,
+            move_id: move.id,
+            product_id: Array.isArray(move.product_id) ? move.product_id[0] : move.product_id,
+            product_uom_id: Array.isArray(move.product_uom) ? move.product_uom[0] : move.product_uom,
+            location_id: moveLocId || 288,
+            location_dest_id: Array.isArray(move.location_dest_id) ? move.location_dest_id[0] : move.location_dest_id,
+            qty_done: 0,
+          };
           if (hasPackaging) {
-            // Khi có product_packaging: lấy trường package_qty (demand) và tính số lượng đã soạn
-            orderedQty = Number(m.package_qty) || 0;
-            const linesPkgDone = pickedPackageQtyMap[m.id] || 0;
-            const movePkgDone = Number(m.package_qty_done) || 0;
-            // Ưu tiên tổng số lượng package_qty thực tế từ các dòng stock.move.line
-            pickedQty = linesPkgDone > 0 ? linesPkgDone : movePkgDone;
-            orderedUom = packagingName || defaultUom;
-            pickedUom = packagingName || defaultUom;
-          } else {
-            // Luôn lấy từ trường product_uom_qty của stock.move
-            orderedQty = Number(m.product_uom_qty) || 0;
-            orderedUom = customUom || defaultUom;
-            pickedQty = pickedQtyMap[m.id] || 0;
-            pickedUom = customUom || defaultUom;
+            createVals.package_qty = 0;
           }
 
-          const reservedFromLines = Number(reservedQtyMap[m.id]) || 0;
-          const reservedFromMove = Number(m.reserved_availability) || 0;
-          const reservedQty = Math.max(reservedFromLines, reservedFromMove);
-          const isReserved = reservedQty > 0 || m.state === "assigned" || m.state === "partially_available";
+          return new Promise((resL) => {
+            odoo.execute_kw("stock.move.line", "create", [[createVals]], (cErr, newLineId) => {
+              if (cErr) {
+                // Nếu location của move lỗi, thử fallback sang 288
+                if (createVals.location_id !== 288) {
+                  return odoo.execute_kw(
+                    "stock.move.line",
+                    "create",
+                    [[{ ...createVals, location_id: 288 }]],
+                    (cErr2, fallbackLineId) => {
+                      if (cErr2) {
+                        console.warn(`[AutoCreateLine] Lỗi tạo move line cho move ${move.id}:`, cErr2?.message || cErr2);
+                        return resL(null);
+                      }
+                      resL(fallbackLineId);
+                    }
+                  );
+                }
+                console.warn(`[AutoCreateLine] Lỗi tạo move line cho move ${move.id}:`, cErr?.message || cErr);
+                return resL(null);
+              }
+              resL(newLineId);
+            });
+          });
+        })
+      );
+      didAutoCreate = true;
+    }
 
-          return {
-            id: m.id,
-            product: {
-              id: m.product_id[0],
-              name: m.product_id[1],
-              barcode: productBarcodeMap.get(m.product_id[0]) || null,
-            },
-            orderedQty: Number(orderedQty) || 0,
-            orderedUom,
-            orderedFromPicking: true,
-            pickedQty: Number(pickedQty) || 0,
-            pickedUom,
-            reservedQty: Number(reservedQty) || 0,
-            isReserved: Boolean(isReserved),
-            hasPackaging,
-            packaging:
-              hasPackaging && Array.isArray(m.product_packaging)
-                ? { id: m.product_packaging[0], name: m.product_packaging[1] }
-                : null,
-            packageQty: Number(m.package_qty) || 0,
-            packageQtyDone: Number(m.package_qty_done) || 0,
-            state: m.state,
-          };
-        });
-
-        resolve(result);
-      } catch (postErr) {
-        reject(postErr);
-      }
+    const pickedQtyMap = {};
+    const reservedQtyMap = {};
+    const pickedPackageQtyMap = {};
+    (moveLines || []).forEach((ml) => {
+      const mId = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+      pickedQtyMap[mId] = (pickedQtyMap[mId] || 0) + (Number(ml.qty_done) || 0);
+      reservedQtyMap[mId] = (reservedQtyMap[mId] || 0) + (Number(ml.product_uom_qty) || 0);
+      pickedPackageQtyMap[mId] = (pickedPackageQtyMap[mId] || 0) + (Number(ml.package_qty) || 0);
     });
-  });
+
+    // BƯỚC 4: Lưu barcode và resolve UoM categories vào cache RAM cho sản phẩm chưa cache
+    if (productRecs && productRecs.length > 0) {
+      const uomIdsToFetch = [];
+      productRecs.forEach((p) => {
+        const rawBarcode = typeof p.barcode === "string" ? p.barcode.trim() : "";
+        productBarcodeCache.set(p.id, rawBarcode || null);
+
+        if (!productCustomUomCache.has(p.id) && p.uom_id && Array.isArray(p.uom_id)) {
+          const uId = p.uom_id[0];
+          if (!uomCategoryCache.has(uId)) {
+            uomIdsToFetch.push(uId);
+          }
+        }
+      });
+
+      if (uomIdsToFetch.length > 0) {
+        try {
+          const uomRecs = await new Promise((resU) => {
+            odoo.execute_kw(
+              "uom.uom",
+              "search_read",
+              [[[["id", "in", Array.from(new Set(uomIdsToFetch))]], ["id", "name", "category_id"], 0, uomIdsToFetch.length]],
+              (uErr, uData) => resU(uData || [])
+            );
+          });
+          (uomRecs || []).forEach((u) => {
+            const catName = u.category_id && Array.isArray(u.category_id) ? String(u.category_id[1]).toLowerCase() : "";
+            const uName = u.name ? String(u.name).toLowerCase() : "";
+            const isUnit = catName.includes("unit") || uName.includes("unit");
+            uomCategoryCache.set(u.id, isUnit);
+          });
+        } catch {
+          // Ignore
+        }
+      }
+
+      productRecs.forEach((p) => {
+        if (!productCustomUomCache.has(p.id)) {
+          const uId = p.uom_id && Array.isArray(p.uom_id) ? p.uom_id[0] : null;
+          const uName = p.uom_id && Array.isArray(p.uom_id) ? String(p.uom_id[1]).toLowerCase() : "";
+          const isUnitCat = (uId && uomCategoryCache.get(uId)) || uName.includes("unit");
+          let effectiveCustomUom = null;
+          if (isUnitCat && p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)) {
+            effectiveCustomUom = p.sea_unit_of_measure[1];
+          }
+          productCustomUomCache.set(p.id, effectiveCustomUom);
+        }
+      });
+    }
+
+    const result = moves.map((m) => {
+      const defaultUom = Array.isArray(m.product_uom) ? m.product_uom[1] : "";
+      const customUom = productCustomUomCache.get(m.product_id[0]);
+
+      const hasPackaging = Boolean(
+        m.product_packaging &&
+          (Array.isArray(m.product_packaging) ? m.product_packaging[0] : m.product_packaging)
+      );
+      const packagingName =
+        hasPackaging && Array.isArray(m.product_packaging) ? m.product_packaging[1] : null;
+
+      let orderedQty = 0;
+      let pickedQty = 0;
+      let orderedUom = "";
+      let pickedUom = "";
+
+      if (hasPackaging) {
+        orderedQty = Number(m.package_qty) || 0;
+        const linesPkgDone = pickedPackageQtyMap[m.id] || 0;
+        const movePkgDone = Number(m.package_qty_done) || 0;
+        pickedQty = linesPkgDone > 0 ? linesPkgDone : movePkgDone;
+        orderedUom = packagingName || defaultUom;
+        pickedUom = packagingName || defaultUom;
+      } else {
+        orderedQty = Number(m.product_uom_qty) || 0;
+        orderedUom = customUom || defaultUom;
+        pickedQty = pickedQtyMap[m.id] || 0;
+        pickedUom = customUom || defaultUom;
+      }
+
+      const reservedFromLines = Number(reservedQtyMap[m.id]) || 0;
+      const reservedFromMove = Number(m.reserved_availability) || 0;
+      const reservedQty = Math.max(reservedFromLines, reservedFromMove);
+      const isReserved = reservedQty > 0 || m.state === "assigned" || m.state === "partially_available";
+
+      return {
+        id: m.id,
+        product: {
+          id: m.product_id[0],
+          name: m.product_id[1],
+          barcode: productBarcodeCache.get(m.product_id[0]) || null,
+        },
+        orderedQty: Number(orderedQty) || 0,
+        orderedUom,
+        orderedFromPicking: true,
+        pickedQty: Number(pickedQty) || 0,
+        pickedUom,
+        reservedQty: Number(reservedQty) || 0,
+        isReserved: Boolean(isReserved),
+        hasPackaging,
+        packaging:
+          hasPackaging && Array.isArray(m.product_packaging)
+            ? { id: m.product_packaging[0], name: m.product_packaging[1] }
+            : null,
+        packageQty: Number(m.package_qty) || 0,
+        packageQtyDone: Number(m.package_qty_done) || 0,
+        state: m.state,
+      };
+    });
+
+    result.autoCreatedLines = didAutoCreate;
+    return result;
+  } catch (postErr) {
+    throw postErr;
+  }
 }
 
 export async function getMoveLines(odoo, moveId) {
@@ -1041,4 +1127,321 @@ export async function getLots(odoo, productId, query, limit = 50) {
       resolve(result);
     });
   });
+}
+
+// Cache thông tin sản phẩm và báo cáo tồn kho
+const storableProductInfoCache = new Map(); // productId -> productInfo
+const stockReportCache = new Map();         // `${productId}_${companyId}` -> { data, expiresAt }
+const STOCK_REPORT_CACHE_TTL = 15000;       // 15 giây
+
+export async function searchStorableProducts(odoo, query, limit = 20) {
+  return new Promise((resolve, reject) => {
+    const maxLimit = Math.min(parseInt(limit, 10) || 20, 50);
+    const domain = [
+      ["type", "=", "product"], // Chỉ lấy sản phẩm có thể lưu kho
+      ["active", "=", true],
+    ];
+
+    if (query && typeof query === "string" && query.trim()) {
+      const q = query.trim();
+      domain.push("|", "|", ["name", "ilike", q], ["barcode", "ilike", q], ["default_code", "ilike", q]);
+    }
+
+    const params = [
+      domain,
+      ["id", "name", "barcode", "default_code", "uom_id", "sea_unit_of_measure", "tracking"],
+      0,
+      maxLimit,
+      "name asc",
+    ];
+
+    odoo.execute_kw("product.product", "search_read", [params], (err, records) => {
+      if (err) return reject(err);
+      const result = (records || []).map((p) => {
+        const defaultUom = Array.isArray(p.uom_id) ? p.uom_id[1] : "";
+        const customUom =
+          p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)
+            ? p.sea_unit_of_measure[1]
+            : null;
+        const pInfo = {
+          id: p.id,
+          name: p.name,
+          barcode: typeof p.barcode === "string" ? p.barcode.trim() : null,
+          defaultCode: typeof p.default_code === "string" ? p.default_code.trim() : null,
+          uom: customUom || defaultUom,
+          tracking: p.tracking || "none",
+        };
+        // Lưu trước vào RAM cache để getProductStockReport không cần query lại product.product
+        storableProductInfoCache.set(p.id, pInfo);
+        return pInfo;
+      });
+      resolve(result);
+    });
+  });
+}
+
+export async function getProductStockSummary(odoo, productId, companyId) {
+  const pId = parseInt(productId, 10);
+  const cId = parseInt(companyId, 10);
+  if (!pId || !cId) {
+    throw new Error("Mã sản phẩm hoặc công ty không hợp lệ");
+  }
+
+  const cacheKey = `sum_${pId}_${cId}`;
+  const cachedReport = stockReportCache.get(cacheKey);
+  if (cachedReport && Date.now() < cachedReport.expiresAt) {
+    return cachedReport.data;
+  }
+
+  const quantDomain = [
+    ["product_id", "=", pId],
+    ["company_id", "=", cId],
+    ["location_id.usage", "=", "internal"],
+  ];
+
+  const [productInfo, sumResult] = await Promise.all([
+    storableProductInfoCache.has(pId)
+      ? Promise.resolve(storableProductInfoCache.get(pId))
+      : new Promise((resP) => {
+          odoo.execute_kw(
+            "product.product",
+            "search_read",
+            [[[["id", "=", pId]], ["id", "name", "barcode", "default_code", "uom_id", "sea_unit_of_measure", "tracking"], 0, 1]],
+            (pErr, pRecs) => {
+              if (pErr || !pRecs || pRecs.length === 0) return resP(null);
+              const p = pRecs[0];
+              const defaultUom = Array.isArray(p.uom_id) ? p.uom_id[1] : "";
+              const customUom =
+                p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)
+                  ? p.sea_unit_of_measure[1]
+                  : null;
+              const info = {
+                id: p.id,
+                name: p.name,
+                barcode: typeof p.barcode === "string" ? p.barcode.trim() : null,
+                defaultCode: typeof p.default_code === "string" ? p.default_code.trim() : null,
+                uom: customUom || defaultUom,
+                tracking: p.tracking || "none",
+              };
+              storableProductInfoCache.set(p.id, info);
+              resP(info);
+            }
+          );
+        }),
+    new Promise((resQ) => {
+      odoo.execute_kw(
+        "stock.quant",
+        "read_group",
+        [quantDomain, ["quantity"], []],
+        (qErr, qRes) => {
+          if (!qErr && Array.isArray(qRes) && qRes.length > 0 && qRes[0].quantity !== undefined) {
+            return resQ(Number(qRes[0].quantity) || 0);
+          }
+          // Fallback nếu read_group gặp issue
+          odoo.execute_kw(
+            "stock.quant",
+            "search_read",
+            [[quantDomain, ["quantity"], 0, 1000]],
+            (srErr, srList) => {
+              if (srErr || !srList) return resQ(0);
+              let total = 0;
+              for (let i = 0; i < srList.length; i++) {
+                total += Number(srList[i].quantity) || 0;
+              }
+              resQ(total);
+            }
+          );
+        }
+      );
+    }),
+  ]);
+
+  const result = {
+    product: productInfo || { id: pId, name: "Sản phẩm", uom: "" },
+    companyId: cId,
+    totalQuantity: sumResult,
+  };
+
+  stockReportCache.set(cacheKey, {
+    data: result,
+    expiresAt: Date.now() + STOCK_REPORT_CACHE_TTL,
+  });
+
+  return result;
+}
+
+export async function getProductStockReport(odoo, productId, companyId) {
+  const pId = parseInt(productId, 10);
+  const cId = parseInt(companyId, 10);
+  if (!pId || !cId) {
+    throw new Error("Mã sản phẩm hoặc công ty không hợp lệ");
+  }
+
+  // 1. Kiểm tra cache RAM của báo cáo tồn kho
+  const cacheKey = `${pId}_${cId}`;
+  const cachedReport = stockReportCache.get(cacheKey);
+  if (cachedReport && Date.now() < cachedReport.expiresAt) {
+    return cachedReport.data;
+  }
+
+  // 2. Chạy SONG SONG: Lấy thông tin sản phẩm (nếu chưa cache) VÀ đọc stock.quant
+  const quantDomain = [
+    ["product_id", "=", pId],
+    ["company_id", "=", cId],
+    ["location_id.usage", "=", "internal"],
+    ["quantity", "!=", 0],
+  ];
+
+  const quantFields = ["id", "location_id", "lot_id", "quantity"];
+
+  const [productInfo, quants] = await Promise.all([
+    // Lấy thông tin sản phẩm (từ RAM cache nếu có, nếu chưa thì query Odoo)
+    storableProductInfoCache.has(pId)
+      ? Promise.resolve(storableProductInfoCache.get(pId))
+      : new Promise((resP) => {
+          odoo.execute_kw(
+            "product.product",
+            "search_read",
+            [[[["id", "=", pId]], ["id", "name", "barcode", "default_code", "uom_id", "sea_unit_of_measure", "tracking"], 0, 1]],
+            (pErr, pRecs) => {
+              if (pErr || !pRecs || pRecs.length === 0) {
+                return resP(null);
+              }
+              const p = pRecs[0];
+              const defaultUom = Array.isArray(p.uom_id) ? p.uom_id[1] : "";
+              const customUom =
+                p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)
+                  ? p.sea_unit_of_measure[1]
+                  : null;
+              const info = {
+                id: p.id,
+                name: p.name,
+                barcode: typeof p.barcode === "string" ? p.barcode.trim() : null,
+                defaultCode: typeof p.default_code === "string" ? p.default_code.trim() : null,
+                uom: customUom || defaultUom,
+                tracking: p.tracking || "none",
+              };
+              storableProductInfoCache.set(p.id, info);
+              resP(info);
+            }
+          );
+        }),
+
+    // Đọc stock.quant từ Odoo
+    new Promise((resQ, rejQ) => {
+      odoo.execute_kw(
+        "stock.quant",
+        "search_read",
+        [[quantDomain, quantFields, 0, 2000]],
+        (qErr, quantRecs) => {
+          if (qErr) return rejQ(qErr);
+          resQ(quantRecs || []);
+        }
+      );
+    }),
+  ]);
+
+  const quantList = quants || [];
+  let totalQuantity = 0;
+
+  // Group theo Lô -> Địa điểm
+  const lotMap = new Map();
+  // Group theo Địa điểm -> Lô
+  const locationMap = new Map();
+
+  for (let i = 0; i < quantList.length; i++) {
+    const q = quantList[i];
+    const qty = Number(q.quantity) || 0;
+    totalQuantity += qty;
+
+    const lotId = q.lot_id && Array.isArray(q.lot_id) ? q.lot_id[0] : 0;
+    const lotName = q.lot_id && Array.isArray(q.lot_id) ? q.lot_id[1] : "(Không có lô)";
+
+    const locId = q.location_id && Array.isArray(q.location_id) ? q.location_id[0] : 0;
+    const locName = q.location_id && Array.isArray(q.location_id) ? formatLocationName(q.location_id[1]) : "Chưa xác định";
+
+    // Nhóm theo Lô -> Địa điểm
+    let lotGroup = lotMap.get(lotId);
+    if (!lotGroup) {
+      lotGroup = {
+        key: `lot-${lotId}`,
+        lotId,
+        lotName,
+        name: lotName,
+        quantity: 0,
+        children: [],
+      };
+      lotMap.set(lotId, lotGroup);
+    }
+    lotGroup.quantity += qty;
+
+    let existingLoc = null;
+    for (let j = 0; j < lotGroup.children.length; j++) {
+      if (lotGroup.children[j].locationId === locId) {
+        existingLoc = lotGroup.children[j];
+        break;
+      }
+    }
+    if (existingLoc) {
+      existingLoc.quantity += qty;
+    } else {
+      lotGroup.children.push({
+        key: `lot-${lotId}-loc-${locId}`,
+        locationId: locId,
+        locationName: locName,
+        name: locName,
+        quantity: qty,
+      });
+    }
+
+    // Nhóm theo Địa điểm -> Lô
+    let locGroup = locationMap.get(locId);
+    if (!locGroup) {
+      locGroup = {
+        key: `loc-${locId}`,
+        locationId: locId,
+        locationName: locName,
+        name: locName,
+        quantity: 0,
+        children: [],
+      };
+      locationMap.set(locId, locGroup);
+    }
+    locGroup.quantity += qty;
+
+    let existingLot = null;
+    for (let j = 0; j < locGroup.children.length; j++) {
+      if (locGroup.children[j].lotId === lotId) {
+        existingLot = locGroup.children[j];
+        break;
+      }
+    }
+    if (existingLot) {
+      existingLot.quantity += qty;
+    } else {
+      locGroup.children.push({
+        key: `loc-${locId}-lot-${lotId}`,
+        lotId,
+        lotName,
+        name: lotName,
+        quantity: qty,
+      });
+    }
+  }
+
+  const reportResult = {
+    product: productInfo || { id: pId, name: "Sản phẩm", uom: "" },
+    companyId: cId,
+    totalQuantity,
+    byLot: Array.from(lotMap.values()).sort((a, b) => b.quantity - a.quantity),
+    byLocation: Array.from(locationMap.values()).sort((a, b) => b.quantity - a.quantity),
+  };
+
+  // Lưu vào RAM cache server
+  stockReportCache.set(cacheKey, {
+    data: reportResult,
+    expiresAt: Date.now() + STOCK_REPORT_CACHE_TTL,
+  });
+
+  return reportResult;
 }
