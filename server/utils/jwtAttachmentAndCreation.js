@@ -18,6 +18,6 @@ export const attachCookiesToResponse = ({ res, data }) => {
     maxAge: COOKIE_MAX_AGE,
     secure: process.env.NODE_ENV === "production",
     sign: true,
-    // sameSite: "none",
+    sameSite: "none",
   });
 };
