@@ -193,7 +193,7 @@ const StockReportModal: React.FC<StockReportModalProps> = ({ open, onCancel }) =
     [selectedProduct, companyId]
   );
 
-  // Quét barcode từ camera: trực tiếp tìm và mở số tổng ngay lập tức
+  // Quét barcode từ camera: trực tiếp tìm và mở số tổng ngay lập tức (1 API call kết hợp)
   const handleBarcodeScanned = async (barcode: string) => {
     setIsScannerOpen(false);
     if (!barcode) return;
@@ -202,22 +202,24 @@ const StockReportModal: React.FC<StockReportModalProps> = ({ open, onCancel }) =
     setSearching(true);
 
     try {
-      const results = await pickingService.searchStorableProducts(trimmed, 20);
-      const data = results || [];
-      searchCacheRef.current.set(trimmed.toLowerCase(), data);
-      setSearchResults(data);
+      const res = await pickingService.searchBarcodeAndGetStock(trimmed, companyId);
+      const matches = res?.matches || [];
+      searchCacheRef.current.set(trimmed.toLowerCase(), matches);
+      setSearchResults(matches);
 
-      if (data.length === 1) {
-        loadStockSummary(data[0]);
-      } else if (data.length > 1) {
-        const exactMatch = data.find(
-          (p) => p.barcode && p.barcode.toLowerCase() === trimmed.toLowerCase()
-        );
-        if (exactMatch) {
-          loadStockSummary(exactMatch);
-        } else {
-          message.info(`Tìm thấy ${data.length} sản phẩm, vui lòng chọn`);
-        }
+      if (res?.product && res.totalQuantity !== null && res.totalQuantity !== undefined) {
+        // Có ngay kết quả số tồn kho trong 1 round-trip duy nhất
+        setSelectedProduct(res.product);
+        setShowDetails(false);
+        setDetailsData(null);
+        const summary: StockSummaryState = {
+          totalQuantity: res.totalQuantity,
+          uom: res.product.uom || '',
+        };
+        summaryCacheRef.current.set(res.product.id, summary);
+        setSummaryData(summary);
+      } else if (matches.length > 1) {
+        message.info(`Tìm thấy ${matches.length} sản phẩm, vui lòng chọn`);
       } else {
         message.warning(`Không tìm thấy sản phẩm có barcode "${trimmed}"`);
       }

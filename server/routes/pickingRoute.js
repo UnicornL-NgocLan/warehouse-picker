@@ -14,6 +14,7 @@ router.delete("/delete-move-line/:id", authenticateUser, pickingCtrl.deleteMoveL
 router.get("/get-locations", authenticateUser, pickingCtrl.getLocations);
 router.get("/get-lots", authenticateUser, pickingCtrl.getLots);
 router.get("/search-storable-products", authenticateUser, pickingCtrl.searchStorableProducts);
+router.get("/barcode-stock-summary", authenticateUser, pickingCtrl.searchBarcodeAndGetStock);
 router.get("/product-stock-summary/:productId", authenticateUser, pickingCtrl.getProductStockSummary);
 router.get("/product-stock-report/:productId", authenticateUser, pickingCtrl.getProductStockReport);
 

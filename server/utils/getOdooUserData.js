@@ -1181,6 +1181,43 @@ const storableProductInfoCache = new Map(); // productId -> productInfo
 const stockReportCache = new Map();         // `${productId}_${companyId}` -> { data, expiresAt }
 const STOCK_REPORT_CACHE_TTL = 15000;       // 15 giây
 
+// Cache danh sách ID địa điểm nội bộ (internal) theo công ty
+// Dùng để thay thế ["location_id.usage", "=", "internal"] (chậm do cross-join)
+// bằng ["location_id", "in", [...ids]] (nhanh vì dùng được index DB)
+const internalLocationIdsCache = new Map(); // companyId -> { ids: number[], expiresAt: number }
+const LOCATION_IDS_TTL = 300000; // 5 phút - ID địa điểm thay đổi rất hiếm
+
+async function getInternalLocationIds(odoo, companyId) {
+  const cId = parseInt(companyId, 10);
+  if (!cId) return [];
+
+  const cached = internalLocationIdsCache.get(cId);
+  if (cached && Date.now() < cached.expiresAt) return cached.ids;
+
+  const records = await new Promise((res) => {
+    odoo.execute_kw(
+      "stock.location",
+      "search_read",
+      [
+        [
+          [["usage", "=", "internal"], ["company_id", "in", [cId, false]]],
+          ["id"],
+          0,
+          2000,
+        ],
+      ],
+      (err, recs) => {
+        if (err || !recs) return res([]);
+        res(recs);
+      }
+    );
+  });
+
+  const ids = records.map((r) => r.id);
+  internalLocationIdsCache.set(cId, { ids, expiresAt: Date.now() + LOCATION_IDS_TTL });
+  return ids;
+}
+
 export async function searchStorableProducts(odoo, query, limit = 20) {
   return new Promise((resolve, reject) => {
     const maxLimit = Math.min(parseInt(limit, 10) || 20, 50);
@@ -1240,10 +1277,17 @@ export async function getProductStockSummary(odoo, productId, companyId) {
     return cachedReport.data;
   }
 
+  // Lấy danh sách ID địa điểm nội bộ (đã cache 5 phút)
+  // Nhanh hơn nhiều so với ["location_id.usage", "=", "internal"] (cross-join chậm)
+  const internalIds = await getInternalLocationIds(odoo, cId);
+  const locationDomain = internalIds.length > 0
+    ? ["location_id", "in", internalIds]
+    : ["location_id.usage", "=", "internal"]; // fallback nếu cache rỗng
+
   const quantDomain = [
     ["product_id", "=", pId],
     ["company_id", "=", cId],
-    ["location_id.usage", "=", "internal"],
+    locationDomain,
   ];
 
   const [productInfo, sumResult] = await Promise.all([
@@ -1331,11 +1375,17 @@ export async function getProductStockReport(odoo, productId, companyId) {
     return cachedReport.data;
   }
 
-  // 2. Chạy SONG SONG: Lấy thông tin sản phẩm (nếu chưa cache) VÀ đọc stock.quant
+  // 2. Lấy danh sách ID địa điểm nội bộ (đã cache 5 phút)
+  const internalIds = await getInternalLocationIds(odoo, cId);
+  const locationDomain = internalIds.length > 0
+    ? ["location_id", "in", internalIds]
+    : ["location_id.usage", "=", "internal"];
+
+  // 3. Chạy SONG SONG: Lấy thông tin sản phẩm (nếu chưa cache) VÀ đọc stock.quant
   const quantDomain = [
     ["product_id", "=", pId],
     ["company_id", "=", cId],
-    ["location_id.usage", "=", "internal"],
+    locationDomain,
     ["quantity", "!=", 0],
   ];
 
@@ -1491,4 +1541,105 @@ export async function getProductStockReport(odoo, productId, companyId) {
   });
 
   return reportResult;
+}
+
+export async function searchBarcodeAndGetStock(odoo, barcode, companyId) {
+  if (!barcode || typeof barcode !== "string" || !barcode.trim()) {
+    return { product: null, totalQuantity: null, matches: [] };
+  }
+
+  const trimmed = barcode.trim();
+  const cId = parseInt(companyId, 10);
+
+  // Chạy song song: tìm kiếm sản phẩm và lấy internal location IDs
+  const [matches, internalIds] = await Promise.all([
+    searchStorableProducts(odoo, trimmed, 20),
+    cId ? getInternalLocationIds(odoo, cId) : Promise.resolve([]),
+  ]);
+
+  if (!matches || matches.length === 0) {
+    return { product: null, totalQuantity: null, matches: [] };
+  }
+
+  // Tìm sản phẩm khớp chính xác barcode hoặc chỉ có 1 kết quả
+  let targetProduct = null;
+  if (matches.length === 1) {
+    targetProduct = matches[0];
+  } else {
+    const exact = matches.find(
+      (p) => p.barcode && p.barcode.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (exact) {
+      targetProduct = exact;
+    }
+  }
+
+  // Nếu không xác định được 1 sản phẩm cụ thể hoặc không có companyId -> trả về danh sách để user chọn
+  if (!targetProduct || !cId) {
+    return { product: targetProduct, totalQuantity: null, matches };
+  }
+
+  // Nếu đã xác định được sản phẩm, lấy ngay số tổng tồn kho (read_group)
+  const cacheKey = `sum_${targetProduct.id}_${cId}`;
+  const cachedReport = stockReportCache.get(cacheKey);
+  if (cachedReport && Date.now() < cachedReport.expiresAt) {
+    return {
+      product: targetProduct,
+      totalQuantity: cachedReport.data.totalQuantity,
+      matches,
+    };
+  }
+
+  const locationDomain = internalIds.length > 0
+    ? ["location_id", "in", internalIds]
+    : ["location_id.usage", "=", "internal"];
+
+  const quantDomain = [
+    ["product_id", "=", targetProduct.id],
+    ["company_id", "=", cId],
+    locationDomain,
+  ];
+
+  const totalQuantity = await new Promise((resQ) => {
+    odoo.execute_kw(
+      "stock.quant",
+      "read_group",
+      [quantDomain, ["quantity"], []],
+      (qErr, qRes) => {
+        if (!qErr && Array.isArray(qRes) && qRes.length > 0 && qRes[0].quantity !== undefined) {
+          return resQ(Number(qRes[0].quantity) || 0);
+        }
+        // Fallback nếu read_group gặp issue
+        odoo.execute_kw(
+          "stock.quant",
+          "search_read",
+          [[quantDomain, ["quantity"], 0, 1000]],
+          (srErr, srList) => {
+            if (srErr || !srList) return resQ(0);
+            let total = 0;
+            for (let i = 0; i < srList.length; i++) {
+              total += Number(srList[i].quantity) || 0;
+            }
+            resQ(total);
+          }
+        );
+      }
+    );
+  });
+
+  // Lưu vào cache để getProductStockSummary tái sử dụng
+  stockReportCache.set(cacheKey, {
+    data: {
+      product: targetProduct,
+      companyId: cId,
+      totalQuantity,
+    },
+    expiresAt: Date.now() + STOCK_REPORT_CACHE_TTL,
+  });
+
+  return {
+    product: targetProduct,
+    totalQuantity,
+    matches,
+  };
 }

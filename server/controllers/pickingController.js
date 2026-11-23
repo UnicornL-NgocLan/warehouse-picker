@@ -7,6 +7,7 @@ import {
   searchStorableProducts,
   getProductStockSummary,
   getProductStockReport,
+  searchBarcodeAndGetStock,
 } from "../utils/getOdooUserData.js";
 import {
   createMoveLine,
@@ -333,6 +334,24 @@ export const pickingCtrl = {
     } catch (error) {
       console.error("Error in getProductStockReport controller:", error.message || error);
       return res.status(500).json({ msg: error.message || "Không thể lấy báo cáo tồn kho" });
+    }
+  },
+
+  searchBarcodeAndGetStock: async (req, res) => {
+    try {
+      const barcode = req.query.barcode || req.query.q || "";
+      let companyId = parsePositiveInt(req.query.companyId);
+      if (!companyId && req.user && req.user[0] && req.user[0].company_id) {
+        companyId = Array.isArray(req.user[0].company_id)
+          ? req.user[0].company_id[0]
+          : req.user[0].company_id;
+      }
+
+      const data = await searchBarcodeAndGetStock(req.odoo, barcode, companyId);
+      return res.status(200).json({ data });
+    } catch (error) {
+      console.error("Error in searchBarcodeAndGetStock controller:", error.message || error);
+      return res.status(500).json({ msg: error.message || "Không thể quét mã vạch và lấy tồn kho" });
     }
   },
 };

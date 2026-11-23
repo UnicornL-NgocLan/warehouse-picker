@@ -63,6 +63,28 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
   const [manualCode, setManualCode] = useState<string>('');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
+  // Bắt và ngăn chặn Uncaught Runtime Error từ driver Camera của trình duyệt (setPhotoOptions / applyConstraints)
+  useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event?.reason;
+      const errorMsg = reason?.message || String(reason || '');
+      if (
+        errorMsg.includes('setPhotoOptions') ||
+        errorMsg.includes('applyConstraints') ||
+        reason?.name === 'DOMException'
+      ) {
+        // Ngăn chặn React Error Overlay hiển thị màn hình đỏ
+        event.preventDefault();
+        console.warn('Đã bỏ qua lỗi camera không nghiêm trọng của trình duyệt:', errorMsg);
+      }
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    return () => {
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }, []);
+
   // Dừng camera và dọn dẹp
   const stopScanning = useCallback(() => {
     isScanningRef.current = false;
@@ -84,7 +106,9 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => {
         try {
-          track.stop();
+          if (track.readyState === 'live') {
+            track.stop();
+          }
         } catch {
           // ignore
         }
@@ -104,6 +128,10 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
     (code: string) => {
       const trimmed = (code || '').trim();
       if (!trimmed) return;
+      if (!isScanningRef.current) return;
+
+      // Đánh dấu dừng ngay lập tức để không kích hoạt frame tiếp theo
+      isScanningRef.current = false;
 
       if (soundEnabled) {
         playBeep();
@@ -168,9 +196,12 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
             if ((capabilities as any).torch) {
               setHasTorch(true);
             }
-            if ((capabilities as any).focusMode?.includes('continuous')) {
-              await videoTrack.applyConstraints({
+            if ((capabilities as any).focusMode?.includes('continuous') && videoTrack.readyState === 'live') {
+              // Áp dụng focusMode an toàn, không await chặn luồng và bắt lỗi âm thầm
+              videoTrack.applyConstraints({
                 advanced: [{ focusMode: 'continuous' } as any],
+              }).catch(() => {
+                // Bỏ qua lỗi nếu driver camera không hỗ trợ setPhotoOptions
               });
             }
           } catch {
@@ -271,11 +302,13 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
   const toggleTorch = async () => {
     if (!streamRef.current) return;
     const track = streamRef.current.getVideoTracks()[0];
-    if (!track) return;
+    if (!track || track.readyState !== 'live') return;
     try {
       const nextTorch = !torchOn;
       await track.applyConstraints({
         advanced: [{ torch: nextTorch } as any],
+      }).catch((err) => {
+        console.warn('Bật/tắt đèn flash không thành công:', err);
       });
       setTorchOn(nextTorch);
     } catch {

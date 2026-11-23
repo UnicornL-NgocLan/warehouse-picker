@@ -65,6 +65,21 @@ export const pickingService = {
     return response.data.data;
   },
 
+  searchBarcodeAndGetStock: async (
+    barcode: string,
+    companyId?: number
+  ): Promise<{
+    product: StorableProduct | null;
+    totalQuantity: number | null;
+    matches: StorableProduct[];
+  }> => {
+    const companyParam = companyId ? `&companyId=${companyId}` : "";
+    const response = await app.get(
+      `/api/barcode-stock-summary?barcode=${encodeURIComponent(barcode)}${companyParam}`
+    );
+    return response.data.data;
+  },
+
   getProductStockSummary: async (productId: number, companyId?: number): Promise<{
     product: {
       id: number;
