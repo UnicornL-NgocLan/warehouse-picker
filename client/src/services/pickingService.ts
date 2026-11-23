@@ -69,13 +69,35 @@ export const pickingService = {
     barcode: string,
     companyId?: number
   ): Promise<{
+    success: boolean;
     product: StorableProduct | null;
     totalQuantity: number | null;
     matches: StorableProduct[];
+    message?: string;
+    notFoundGlobal?: boolean;
+    notFoundInCompany?: boolean;
   }> => {
     const companyParam = companyId ? `&companyId=${companyId}` : "";
     const response = await app.get(
       `/api/barcode-stock-summary?barcode=${encodeURIComponent(barcode)}${companyParam}`
+    );
+    return response.data.data;
+  },
+
+  resolveBarcode: async (
+    barcode: string,
+    companyId?: number
+  ): Promise<{
+    success: boolean;
+    product?: StorableProduct;
+    globalProduct?: any;
+    message?: string;
+    notFoundGlobal?: boolean;
+    notFoundInCompany?: boolean;
+  }> => {
+    const companyParam = companyId ? `&companyId=${companyId}` : "";
+    const response = await app.get(
+      `/api/resolve-barcode?barcode=${encodeURIComponent(barcode)}${companyParam}`
     );
     return response.data.data;
   },

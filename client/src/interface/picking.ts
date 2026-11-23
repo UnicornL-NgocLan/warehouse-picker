@@ -13,6 +13,7 @@ export type Picking = {
 
 export type ProductRef = Ref & {
   barcode?: string | null;
+  default_code?: string | null;
 };
 
 export type Move = {

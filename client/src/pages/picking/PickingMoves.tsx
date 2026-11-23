@@ -69,33 +69,69 @@ const PickingMoves: React.FC = () => {
   }, [loadMoves, pickingId]);
 
   const handleScanBarcode = useCallback(
-    (rawCode: string) => {
+    async (rawCode: string) => {
       const code = rawCode ? rawCode.trim() : '';
       setScannerOpen(false);
       if (!code) return;
 
-      const matchedMove = moves.find(
-        (m) => m.product?.barcode && m.product.barcode.trim().toLowerCase() === code.toLowerCase()
-      );
+      try {
+        const res = await pickingService.resolveBarcode(code);
+        if (!res?.success) {
+          Modal.warning({
+            title: 'Không tìm thấy sản phẩm',
+            content: res?.message || `Không tìm thấy sản phẩm có barcode "${code}" trên hệ thống.`,
+            okText: 'Đóng',
+            centered: true,
+          });
+          return;
+        }
 
-      if (!matchedMove) {
-        Modal.warning({
-          title: 'Không tìm thấy sản phẩm',
-          content: `Không tìm thấy sản phẩm có barcode "${code}" trong phiếu.`,
+        const companyProduct = res.product;
+        if (!companyProduct) {
+          Modal.warning({
+            title: 'Không tìm thấy sản phẩm',
+            content: 'Không tìm thấy sản phẩm ở công ty hiện tại.',
+            okText: 'Đóng',
+            centered: true,
+          });
+          return;
+        }
+
+        const matchedMove = moves.find(
+          (m) =>
+            m.product?.id === companyProduct.id ||
+            (m.product?.default_code &&
+              companyProduct.default_code &&
+              m.product.default_code.trim().toLowerCase() === companyProduct.default_code.trim().toLowerCase()) ||
+            (m.product?.barcode && m.product.barcode.trim().toLowerCase() === code.toLowerCase())
+        );
+
+        if (!matchedMove) {
+          Modal.warning({
+            title: 'Không có trong phiếu',
+            content: `Sản phẩm "${companyProduct.name}" (${companyProduct.default_code || code}) không có trong phiếu soạn hàng này.`,
+            okText: 'Đóng',
+            centered: true,
+          });
+          return;
+        }
+
+        navigate(`/pickings/${pickingId}/moves/${matchedMove.id}`, {
+          state: {
+            move: matchedMove,
+            pickingTitle,
+            pickingState: passedPicking?.state || matchedMove.state,
+            autoCreateIfEmpty: true,
+          },
+        });
+      } catch (err: any) {
+        Modal.error({
+          title: 'Lỗi',
+          content: err?.message || 'Lỗi khi tìm kiếm sản phẩm theo mã barcode',
           okText: 'Đóng',
           centered: true,
         });
-        return;
       }
-
-      navigate(`/pickings/${pickingId}/moves/${matchedMove.id}`, {
-        state: {
-          move: matchedMove,
-          pickingTitle,
-          pickingState: passedPicking?.state || matchedMove.state,
-          autoCreateIfEmpty: true,
-        },
-      });
     },
     [moves, navigate, pickingId, pickingTitle, passedPicking?.state]
   );

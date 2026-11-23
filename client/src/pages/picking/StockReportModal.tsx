@@ -203,6 +203,14 @@ const StockReportModal: React.FC<StockReportModalProps> = ({ open, onCancel }) =
 
     try {
       const res = await pickingService.searchBarcodeAndGetStock(trimmed, companyId);
+      if (!res?.success) {
+        message.warning(res?.message || `Không tìm thấy sản phẩm có barcode "${trimmed}"`);
+        setSearchResults([]);
+        setSelectedProduct(null);
+        setSummaryData(null);
+        return;
+      }
+
       const matches = res?.matches || [];
       searchCacheRef.current.set(trimmed.toLowerCase(), matches);
       setSearchResults(matches);

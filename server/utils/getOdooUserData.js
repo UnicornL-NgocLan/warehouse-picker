@@ -1,3 +1,5 @@
+import Odoo from "odoo-xmlrpc";
+
 export async function getUserData(odoo, uid) {
   return new Promise((resolve, reject) => {
     const params = [[["id", "=", uid]], ["id", "name", "company_ids", "company_id", "email", "partner_id"]];
@@ -637,6 +639,7 @@ export function formatLocationName(rawName) {
 const uomCategoryCache = new Map();      // uomId    -> boolean (isUnitCat)
 const productCustomUomCache = new Map(); // productId -> string | null (customUom)
 const productBarcodeCache = new Map();   // productId -> string | null (barcode)
+const productDefaultCodeCache = new Map(); // productId -> string | null (default_code)
 const productTrackingCache = new Map();  // productId -> string (tracking: 'none'|'lot'|'serial')
 
 // Cache và kiểm tra xem stock location có type là 'view' và tên chứa 'WHHCM'
@@ -744,7 +747,10 @@ export async function getPickingMoves(odoo, pickingId) {
 
     // Lọc ra các sản phẩm chưa có trong cache RAM
     const uncachedProductIds = productIds.filter(
-      (pId) => !productCustomUomCache.has(pId) || !productBarcodeCache.has(pId)
+      (pId) =>
+        !productCustomUomCache.has(pId) ||
+        !productBarcodeCache.has(pId) ||
+        !productDefaultCodeCache.has(pId)
     );
 
     // BƯỚC 2: Nếu chưa lấy được moveLines thì fallback lấy theo moveIds, đồng thời đọc sản phẩm chưa cache SONG SONG
@@ -769,7 +775,7 @@ export async function getPickingMoves(odoo, pickingId) {
         ? new Promise((resP) => {
             const pParams = [
               [["id", "in", uncachedProductIds]],
-              ["id", "barcode", "uom_id", "sea_unit_of_measure"],
+              ["id", "barcode", "default_code", "uom_id", "sea_unit_of_measure"],
               0,
               uncachedProductIds.length,
             ];
@@ -850,6 +856,8 @@ export async function getPickingMoves(odoo, pickingId) {
       productRecs.forEach((p) => {
         const rawBarcode = typeof p.barcode === "string" ? p.barcode.trim() : "";
         productBarcodeCache.set(p.id, rawBarcode || null);
+        const rawCode = typeof p.default_code === "string" ? p.default_code.trim() : "";
+        productDefaultCodeCache.set(p.id, rawCode || null);
 
         if (!productCustomUomCache.has(p.id) && p.uom_id && Array.isArray(p.uom_id)) {
           const uId = p.uom_id[0];
@@ -935,6 +943,7 @@ export async function getPickingMoves(odoo, pickingId) {
           id: m.product_id[0],
           name: m.product_id[1],
           barcode: productBarcodeCache.get(m.product_id[0]) || null,
+          default_code: productDefaultCodeCache.get(m.product_id[0]) || null,
         },
         orderedQty: Number(orderedQty) || 0,
         orderedUom,
@@ -1543,53 +1552,217 @@ export async function getProductStockReport(odoo, productId, companyId) {
   return reportResult;
 }
 
-export async function searchBarcodeAndGetStock(odoo, barcode, companyId) {
+// Quản lý singleton instance Odoo của tài khoản hệ thống (WAREHOUSE_PICKER_USERNAME)
+let systemOdooInstance = null;
+let systemOdooPromise = null;
+
+export async function getSystemOdoo() {
+  const username = process.env.WAREHOUSE_PICKER_USERNAME;
+  const password = process.env.WAREHOUSE_PICKER_PASSWORD;
+
+  if (!username || !password) {
+    throw new Error(
+      "Chưa cấu hình WAREHOUSE_PICKER_USERNAME hoặc WAREHOUSE_PICKER_PASSWORD trong file .env"
+    );
+  }
+
+  if (systemOdooInstance) {
+    return systemOdooInstance;
+  }
+
+  if (systemOdooPromise) {
+    return systemOdooPromise;
+  }
+
+  systemOdooPromise = new Promise((resolve, reject) => {
+    const odoo = new Odoo({
+      url: process.env.ODOO_URL,
+      db: process.env.ODOO_DB,
+      username,
+      password,
+    });
+
+    odoo.connect((err, uid) => {
+      systemOdooPromise = null;
+      if (err || !uid) {
+        systemOdooInstance = null;
+        return reject(err || new Error("Không thể kết nối Odoo với tài khoản hệ thống"));
+      }
+      systemOdooInstance = odoo;
+      resolve(odoo);
+    });
+  });
+
+  return systemOdooPromise;
+}
+
+/**
+ * Tìm sản phẩm theo barcode qua 2 bước:
+ * Bước 1: Quét toàn hệ thống bằng tài khoản WAREHOUSE_PICKER_USERNAME
+ * Bước 2: Lấy default_code của sản phẩm tìm được, kiểm tra tồn tại ở công ty hiện tại của user
+ */
+export async function findProductByBarcodeGlobalAndCompany(userOdoo, barcode, companyId) {
   if (!barcode || typeof barcode !== "string" || !barcode.trim()) {
-    return { product: null, totalQuantity: null, matches: [] };
+    return {
+      success: false,
+      notFoundGlobal: true,
+      message: "Vui lòng cung cấp mã barcode hợp lệ",
+    };
   }
 
   const trimmed = barcode.trim();
   const cId = parseInt(companyId, 10);
+  const sysOdoo = await getSystemOdoo();
 
-  // Chạy song song: tìm kiếm sản phẩm và lấy internal location IDs
-  const [matches, internalIds] = await Promise.all([
-    searchStorableProducts(odoo, trimmed, 20),
-    cId ? getInternalLocationIds(odoo, cId) : Promise.resolve([]),
-  ]);
+  // BƯỚC 1: Quét toàn hệ thống bằng tài khoản hệ thống
+  const globalRecords = await new Promise((resolve, reject) => {
+    const params = [
+      [["barcode", "=", trimmed], ["active", "=", true]],
+      ["id", "name", "barcode", "default_code", "company_id", "uom_id", "sea_unit_of_measure", "tracking"],
+      0,
+      1,
+    ];
+    sysOdoo.execute_kw("product.product", "search_read", [params], (err, records) => {
+      if (err) return reject(err);
+      resolve(records || []);
+    });
+  });
 
-  if (!matches || matches.length === 0) {
-    return { product: null, totalQuantity: null, matches: [] };
+  if (!globalRecords || globalRecords.length === 0) {
+    return {
+      success: false,
+      notFoundGlobal: true,
+      message: `Không tìm thấy sản phẩm có mã barcode "${trimmed}" trên hệ thống`,
+    };
   }
 
-  // Tìm sản phẩm khớp chính xác barcode hoặc chỉ có 1 kết quả
-  let targetProduct = null;
-  if (matches.length === 1) {
-    targetProduct = matches[0];
-  } else {
-    const exact = matches.find(
-      (p) => p.barcode && p.barcode.trim().toLowerCase() === trimmed.toLowerCase()
-    );
-    if (exact) {
-      targetProduct = exact;
+  const globalProduct = globalRecords[0];
+  const defaultCode =
+    globalProduct.default_code && typeof globalProduct.default_code === "string"
+      ? globalProduct.default_code.trim()
+      : null;
+
+  // BƯỚC 2: Kiểm tra sản phẩm cùng default_code tại công ty hiện tại của user
+  const companyRecords = await new Promise((resolve, reject) => {
+    const domain = [
+      ["active", "=", true],
+      ["type", "=", "product"],
+    ];
+
+    if (defaultCode) {
+      domain.push(["default_code", "=", defaultCode]);
+    } else {
+      // Fallback nếu sản phẩm không có default_code
+      domain.push(["id", "=", globalProduct.id]);
     }
+
+    if (cId) {
+      domain.push(["company_id", "in", [cId, false]]);
+    }
+
+    const params = [
+      domain,
+      ["id", "name", "barcode", "default_code", "uom_id", "sea_unit_of_measure", "tracking"],
+      0,
+      1,
+    ];
+
+    userOdoo.execute_kw("product.product", "search_read", [params], (err, records) => {
+      if (err) return reject(err);
+      resolve(records || []);
+    });
+  });
+
+  if (!companyRecords || companyRecords.length === 0) {
+    const productName = globalProduct.name || "Sản phẩm";
+    const codeDisplay = defaultCode ? ` (${defaultCode})` : "";
+    return {
+      success: false,
+      notFoundInCompany: true,
+      globalProduct: {
+        id: globalProduct.id,
+        name: globalProduct.name,
+        barcode: globalProduct.barcode,
+        default_code: defaultCode,
+      },
+      message: `Sản phẩm "${productName}"${codeDisplay} tồn tại trên hệ thống nhưng không thuộc công ty bạn đang làm việc`,
+    };
   }
 
-  // Nếu không xác định được 1 sản phẩm cụ thể hoặc không có companyId -> trả về danh sách để user chọn
-  if (!targetProduct || !cId) {
-    return { product: targetProduct, totalQuantity: null, matches };
+  const p = companyRecords[0];
+  const defaultUom = Array.isArray(p.uom_id) ? p.uom_id[1] : "";
+  const customUom =
+    p.sea_unit_of_measure && Array.isArray(p.sea_unit_of_measure)
+      ? p.sea_unit_of_measure[1]
+      : null;
+
+  const companyProduct = {
+    id: p.id,
+    name: p.name,
+    barcode: typeof p.barcode === "string" ? p.barcode.trim() : globalProduct.barcode,
+    defaultCode: typeof p.default_code === "string" ? p.default_code.trim() : defaultCode,
+    default_code: typeof p.default_code === "string" ? p.default_code.trim() : defaultCode,
+    uom: customUom || defaultUom,
+    tracking: p.tracking || "none",
+  };
+
+  // Lưu vào RAM cache sản phẩm
+  storableProductInfoCache.set(companyProduct.id, companyProduct);
+
+  return {
+    success: true,
+    product: companyProduct,
+    globalProduct: {
+      id: globalProduct.id,
+      name: globalProduct.name,
+      barcode: globalProduct.barcode,
+      default_code: defaultCode,
+    },
+  };
+}
+
+export async function searchBarcodeAndGetStock(odoo, barcode, companyId) {
+  const cId = parseInt(companyId, 10);
+
+  // 1. Tìm sản phẩm qua quy trình 2 bước: toàn hệ thống -> đối chiếu công ty
+  const lookupRes = await findProductByBarcodeGlobalAndCompany(odoo, barcode, cId);
+  if (!lookupRes.success) {
+    return {
+      success: false,
+      notFoundGlobal: Boolean(lookupRes.notFoundGlobal),
+      notFoundInCompany: Boolean(lookupRes.notFoundInCompany),
+      product: null,
+      totalQuantity: null,
+      matches: [],
+      message: lookupRes.message,
+    };
   }
 
-  // Nếu đã xác định được sản phẩm, lấy ngay số tổng tồn kho (read_group)
+  const targetProduct = lookupRes.product;
+
+  // Nếu không có companyId thì chỉ trả về thông tin sản phẩm
+  if (!cId) {
+    return {
+      success: true,
+      product: targetProduct,
+      totalQuantity: null,
+      matches: [targetProduct],
+    };
+  }
+
+  // 2. Lấy số tổng tồn kho (read_group) tại cty hiện tại
   const cacheKey = `sum_${targetProduct.id}_${cId}`;
   const cachedReport = stockReportCache.get(cacheKey);
   if (cachedReport && Date.now() < cachedReport.expiresAt) {
     return {
+      success: true,
       product: targetProduct,
       totalQuantity: cachedReport.data.totalQuantity,
-      matches,
+      matches: [targetProduct],
     };
   }
 
+  const internalIds = await getInternalLocationIds(odoo, cId);
   const locationDomain = internalIds.length > 0
     ? ["location_id", "in", internalIds]
     : ["location_id.usage", "=", "internal"];
@@ -1609,7 +1782,6 @@ export async function searchBarcodeAndGetStock(odoo, barcode, companyId) {
         if (!qErr && Array.isArray(qRes) && qRes.length > 0 && qRes[0].quantity !== undefined) {
           return resQ(Number(qRes[0].quantity) || 0);
         }
-        // Fallback nếu read_group gặp issue
         odoo.execute_kw(
           "stock.quant",
           "search_read",
@@ -1627,7 +1799,6 @@ export async function searchBarcodeAndGetStock(odoo, barcode, companyId) {
     );
   });
 
-  // Lưu vào cache để getProductStockSummary tái sử dụng
   stockReportCache.set(cacheKey, {
     data: {
       product: targetProduct,
@@ -1638,8 +1809,9 @@ export async function searchBarcodeAndGetStock(odoo, barcode, companyId) {
   });
 
   return {
+    success: true,
     product: targetProduct,
     totalQuantity,
-    matches,
+    matches: [targetProduct],
   };
 }
