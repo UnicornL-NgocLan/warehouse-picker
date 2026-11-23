@@ -639,6 +639,53 @@ const productCustomUomCache = new Map(); // productId -> string | null (customUo
 const productBarcodeCache = new Map();   // productId -> string | null (barcode)
 const productTrackingCache = new Map();  // productId -> string (tracking: 'none'|'lot'|'serial')
 
+// Cache và kiểm tra xem stock location có type là 'view' và tên chứa 'WHHCM'
+const locationCheckCache = new Map();
+
+export async function resolveLocationIdForMoveLine(odoo, moveLocation) {
+  const locId = Array.isArray(moveLocation) ? moveLocation[0] : parseInt(moveLocation, 10);
+  if (!locId) return 288;
+
+  if (locationCheckCache.has(locId)) {
+    return locationCheckCache.get(locId) ? 288 : locId;
+  }
+
+  try {
+    const locRecords = await new Promise((res, rej) => {
+      odoo.execute_kw(
+        "stock.location",
+        "search_read",
+        [[[["id", "=", locId]], ["id", "name", "complete_name", "usage"], 0, 1]],
+        (err, recs) => (err ? rej(err) : res(recs || []))
+      );
+    });
+
+    if (locRecords && locRecords.length > 0) {
+      const loc = locRecords[0];
+      const isView = loc.usage === "view";
+      const nameUpper = String(loc.name || "").trim().toUpperCase();
+      const completeNameUpper = String(loc.complete_name || "").trim().toUpperCase();
+      const isWHHCM = nameUpper === "WHHCM" || completeNameUpper === "WHHCM";
+      const shouldDefaultTo288 = isView && isWHHCM;
+
+      locationCheckCache.set(locId, shouldDefaultTo288);
+      return shouldDefaultTo288 ? 288 : locId;
+    }
+  } catch (err) {
+    console.warn(`[resolveLocationIdForMoveLine] Lỗi đọc stock.location ${locId}:`, err?.message || err);
+  }
+
+  // Fallback: nếu tên địa điểm trên move bằng WHHCM
+  const fallbackName = Array.isArray(moveLocation) && moveLocation.length > 1
+    ? String(moveLocation[1]).trim().toUpperCase()
+    : "";
+  if (fallbackName === "WHHCM") {
+    return 288;
+  }
+
+  return locId;
+}
+
 export async function getPickingMoves(odoo, pickingId) {
   const numPickingId = parseInt(pickingId, 10);
 
@@ -737,20 +784,20 @@ export async function getPickingMoves(odoo, pickingId) {
     // BƯỚC 3: Tối ưu kiểm tra trạng thái phiếu trực tiếp từ moves (bỏ truy vấn thừa sang stock.picking)
     const isPickingActive = !moves.some((m) => m.state === "done" || m.state === "cancel");
     if (moves.length > 0 && (!moveLines || moveLines.length === 0) && isPickingActive) {
-      // Ưu tiên dùng trực tiếp location_id của chính move để tránh lỗi retry địa điểm
+      // Nếu type của location là view và có tên chứa WHHCM thì set mặc định 288
       await Promise.all(
-        moves.map((move) => {
+        moves.map(async (move) => {
           const hasPackaging = Boolean(
             move.product_packaging &&
               (Array.isArray(move.product_packaging) ? move.product_packaging[0] : move.product_packaging)
           );
-          const moveLocId = Array.isArray(move.location_id) ? move.location_id[0] : move.location_id;
+          const resolvedLocId = await resolveLocationIdForMoveLine(odoo, move.location_id);
           const createVals = {
             picking_id: numPickingId,
             move_id: move.id,
             product_id: Array.isArray(move.product_id) ? move.product_id[0] : move.product_id,
             product_uom_id: Array.isArray(move.product_uom) ? move.product_uom[0] : move.product_uom,
-            location_id: moveLocId || 288,
+            location_id: resolvedLocId,
             location_dest_id: Array.isArray(move.location_dest_id) ? move.location_dest_id[0] : move.location_dest_id,
             qty_done: 0,
           };

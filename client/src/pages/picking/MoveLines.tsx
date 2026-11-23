@@ -212,9 +212,21 @@ const MoveLines: React.FC = () => {
         initialLocs.push(line.location);
       }
 
-      const targetLocationId = isNew ? DEFAULT_SOURCE_LOCATION_ID : line.location?.id;
+      // Kiểm tra nếu tên location bằng 'WHHCM' (dạng view của kho HCM)
+      const locName = (line.location?.name || '').trim().toUpperCase();
+      const isWHHCMView = locName === 'WHHCM';
 
-      if (isNew && !initialLocs.some((l) => l.id === DEFAULT_SOURCE_LOCATION_ID)) {
+      // Tại khúc tạo stock move line (isNew) hoặc nếu location là view bằng WHHCM: set mặc định giá trị là 288
+      const targetLocationId =
+        isNew || isWHHCMView || !line.location?.id
+          ? DEFAULT_SOURCE_LOCATION_ID
+          : line.location.id;
+
+      // Đảm bảo địa điểm 288 có sẵn trong danh sách options để Select hiển thị tên
+      if (
+        (targetLocationId === DEFAULT_SOURCE_LOCATION_ID || isNew || isWHHCMView) &&
+        !initialLocs.some((l) => l.id === DEFAULT_SOURCE_LOCATION_ID)
+      ) {
         const existing288 = locationOptions.find((l) => l.id === DEFAULT_SOURCE_LOCATION_ID);
         if (existing288) {
           initialLocs.unshift(existing288);

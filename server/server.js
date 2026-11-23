@@ -35,6 +35,8 @@ const whitelist = [
   "http://103.161.22.196:3033/",
   "http://103.161.22.211:3033",
   "http://103.161.22.211:3033/",
+  "https://soanhang.seateklab.vn",
+  "https://soanhang.seateklab.vn/",
 ];
 
 const isOriginAllowed = (origin) => {

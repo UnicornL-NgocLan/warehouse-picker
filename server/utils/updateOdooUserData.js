@@ -1,4 +1,4 @@
-import { formatLocationName } from "./getOdooUserData.js";
+import { formatLocationName, resolveLocationIdForMoveLine } from "./getOdooUserData.js";
 
 export async function hangeChangeUserCompany(odoo, companyId, uid) {
   return new Promise((resolve, reject) => {
@@ -302,13 +302,15 @@ export async function createMoveLine(odoo, moveId) {
       const packagingName =
         hasPackaging && Array.isArray(move.product_packaging) ? move.product_packaging[1] : null;
 
-      const defaultSourceLocationId = 288;
+      // Nếu type của stock location là view và có tên chứa WHHCM thì set mặc định 288
+      const targetLocationId = await resolveLocationIdForMoveLine(odoo, move.location_id);
+
       const createVals = {
         picking_id: move.picking_id ? move.picking_id[0] : false,
         move_id: move.id,
         product_id: move.product_id[0],
         product_uom_id: move.product_uom[0],
-        location_id: defaultSourceLocationId || move.location_id[0],
+        location_id: targetLocationId,
         location_dest_id: move.location_dest_id[0],
         qty_done: 0,
       };
