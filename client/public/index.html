@@ -25,6 +25,37 @@
       Learn how to configure a non-root public URL by running `npm run build`.
     -->
     <title>Soạn hàng</title>
+    <script>
+      // Ngăn chặn triệt để màn hình đỏ Uncaught Runtime Error do driver camera của Chromium
+      (function() {
+        function shouldSuppress(msg) {
+          if (!msg) return false;
+          var str = String(msg).toLowerCase();
+          return str.indexOf('setphotooptions') !== -1 ||
+                 str.indexOf('applyconstraints') !== -1 ||
+                 str.indexOf('photo options') !== -1;
+        }
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var msg = (reason && (reason.message || reason.stack)) || String(reason || '');
+          if (shouldSuppress(msg) || (reason && reason.name === 'DOMException' && shouldSuppress(reason.message))) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            console.warn('Đã bỏ qua lỗi camera không nghiêm trọng của trình duyệt:', msg);
+          }
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          var msg = (event && (event.message || (event.error && event.error.message))) || '';
+          if (shouldSuppress(msg)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            console.warn('Đã bỏ qua lỗi camera không nghiêm trọng của trình duyệt:', msg);
+          }
+        }, true);
+      })();
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

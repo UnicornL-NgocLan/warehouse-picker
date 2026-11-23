@@ -65,23 +65,39 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
 
   // Bắt và ngăn chặn Uncaught Runtime Error từ driver Camera của trình duyệt (setPhotoOptions / applyConstraints)
   useEffect(() => {
+    const shouldSuppress = (msg: string) => {
+      const lower = (msg || '').toLowerCase();
+      return (
+        lower.includes('setphotooptions') ||
+        lower.includes('applyconstraints') ||
+        lower.includes('photo options')
+      );
+    };
+
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       const reason = event?.reason;
-      const errorMsg = reason?.message || String(reason || '');
-      if (
-        errorMsg.includes('setPhotoOptions') ||
-        errorMsg.includes('applyConstraints') ||
-        reason?.name === 'DOMException'
-      ) {
-        // Ngăn chặn React Error Overlay hiển thị màn hình đỏ
+      const errorMsg = reason?.message || reason?.stack || String(reason || '');
+      if (shouldSuppress(errorMsg) || (reason?.name === 'DOMException' && shouldSuppress(reason?.message))) {
         event.preventDefault();
+        event.stopImmediatePropagation();
         console.warn('Đã bỏ qua lỗi camera không nghiêm trọng của trình duyệt:', errorMsg);
       }
     };
 
-    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    const handleError = (event: ErrorEvent) => {
+      const errorMsg = event?.message || event?.error?.message || '';
+      if (shouldSuppress(errorMsg)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        console.warn('Đã bỏ qua lỗi camera không nghiêm trọng của trình duyệt:', errorMsg);
+      }
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection, true);
+    window.addEventListener('error', handleError, true);
     return () => {
-      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection, true);
+      window.removeEventListener('error', handleError, true);
     };
   }, []);
 
@@ -188,21 +204,13 @@ const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({ open, onCance
           await videoRef.current.play();
         }
 
-        // Kiểm tra khả năng bật đèn Flash (Torch) và Focus
+        // Kiểm tra khả năng bật đèn Flash (Torch)
         const videoTrack = stream.getVideoTracks()[0];
         if (videoTrack) {
           try {
             const capabilities = (videoTrack.getCapabilities && videoTrack.getCapabilities()) || {};
             if ((capabilities as any).torch) {
               setHasTorch(true);
-            }
-            if ((capabilities as any).focusMode?.includes('continuous') && videoTrack.readyState === 'live') {
-              // Áp dụng focusMode an toàn, không await chặn luồng và bắt lỗi âm thầm
-              videoTrack.applyConstraints({
-                advanced: [{ focusMode: 'continuous' } as any],
-              }).catch(() => {
-                // Bỏ qua lỗi nếu driver camera không hỗ trợ setPhotoOptions
-              });
             }
           } catch {
             // Ignore capability check errors
